@@ -7,7 +7,7 @@ PERIOD_DAYS = 1
 # 오늘 한 일 요약 개수
 SUMMARY_COUNT = 3
 
-# Claude 모델 (매일 실행이므로 비용 절약형)
+# Claude 모델
 CLAUDE_MODEL = "claude-opus-4-6"
 
 # 요약 생성 최대 토큰
