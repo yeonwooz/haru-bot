@@ -90,13 +90,14 @@ def wait_for_reply(timeout: int = 21600) -> str | None:
 
 
 def get_latest_reply() -> str | None:
-    """Telegram에서 미확인 메시지 중 가장 최근 텍스트를 가져온다.
+    """Telegram에서 미확인 메시지를 모두 가져와 합쳐서 반환한다.
 
     getUpdates API를 사용하여 처리되지 않은 메시지를 확인하고,
+    여러 메시지가 있으면 줄바꿈으로 합친다.
     확인 후 offset을 업데이트하여 다음 호출 시 중복 방지.
 
     Returns:
-        가장 최근 코멘트 텍스트, 없으면 None
+        합쳐진 코멘트 텍스트, 없으면 None
     """
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -108,14 +109,14 @@ def get_latest_reply() -> str | None:
         bot = Bot(token=token)
         updates = await bot.get_updates()
 
-        reply = None
+        replies = []
         max_update_id = None
 
         for update in updates:
             if (update.message
                     and update.message.text
                     and str(update.message.chat_id) == str(chat_id)):
-                reply = update.message.text
+                replies.append(update.message.text)
             if max_update_id is None or update.update_id > max_update_id:
                 max_update_id = update.update_id
 
@@ -123,12 +124,13 @@ def get_latest_reply() -> str | None:
         if max_update_id is not None:
             await bot.get_updates(offset=max_update_id + 1)
 
-        return reply
+        return "\n".join(replies) if replies else None
 
     try:
         result = asyncio.run(_get())
         if result:
-            print(f"[Telegram] 미처리 코멘트 발견: {result[:50]}...")
+            count = result.count("\n") + 1
+            print(f"[Telegram] 미처리 코멘트 {count}개 발견: {result[:50]}...")
         else:
             print("[Telegram] 미처리 코멘트 없음")
         return result
