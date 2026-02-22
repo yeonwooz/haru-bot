@@ -1,0 +1,28 @@
+name: 하루봇 daily run
+
+on:
+  schedule:
+    # 매일 오후 8시 KST = UTC 11:00
+    - cron: '0 11 * * *'
+  workflow_dispatch: # 수동 실행
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 390 # 6시간 30분 (답장 대기 6시간 + 여유)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Run haru-bot
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DIARY_DB_ID: ${{ secrets.NOTION_DIARY_DB_ID }}
+        run: uv run python src/main.py
