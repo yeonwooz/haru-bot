@@ -8,7 +8,7 @@ PERIOD_DAYS = 1
 SUMMARY_COUNT = 3
 
 # Claude 모델 (매일 실행이므로 비용 절약형)
-CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
+CLAUDE_MODEL = "claude-opus-4-6"
 
 # 요약 생성 최대 토큰
 MAX_TOKENS = 1000
