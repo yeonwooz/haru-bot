@@ -95,7 +95,7 @@ def run():
     print("--- 4단계: Telegram 전송 ---")
     sent = send_summary(summary)
 
-    # 5. 오늘 일기 저장 (코멘트 없이)
+    # 5. 오늘 일기 저장
     print("\n--- 5단계: 일기 저장 ---")
     save_diary(today, summary)
 
