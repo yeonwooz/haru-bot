@@ -13,8 +13,8 @@ CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 # 요약 생성 최대 토큰
 MAX_TOKENS = 1000
 
-# Telegram 코멘트 대기 시간 (초)
-TELEGRAM_POLL_TIMEOUT = 3600  # 1시간
+# Telegram 답장 대기 시간 (초) — GitHub Actions 제한 고려
+TELEGRAM_REPLY_TIMEOUT = 21600  # 6시간
 
 # 모델별 가격 (USD per 1M tokens)
 MODEL_PRICING = {

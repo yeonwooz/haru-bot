@@ -35,11 +35,11 @@ def send_summary(summary: str) -> bool:
         return False
 
 
-def wait_for_reply(timeout: int = 3600) -> str | None:
+def wait_for_reply(timeout: int = 21600) -> str | None:
     """Telegram에서 사용자의 코멘트를 대기한다.
 
     Args:
-        timeout: 대기 시간 (초)
+        timeout: 대기 시간 (초), 기본 6시간
 
     Returns:
         사용자 코멘트 텍스트, 타임아웃 시 None
@@ -65,7 +65,7 @@ def wait_for_reply(timeout: int = 3600) -> str | None:
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        print(f"[Telegram] 코멘트 대기 중 ({timeout}초)...")
+        print(f"[Telegram] 코멘트 대기 중 (최대 {timeout // 3600}시간)...")
 
         async with app:
             await app.start()
@@ -87,6 +87,54 @@ def wait_for_reply(timeout: int = 3600) -> str | None:
     if reply_text:
         print(f"[Telegram] 코멘트 수신: {reply_text[:50]}...")
     return reply_text
+
+
+def get_latest_reply() -> str | None:
+    """Telegram에서 미확인 메시지 중 가장 최근 텍스트를 가져온다.
+
+    getUpdates API를 사용하여 처리되지 않은 메시지를 확인하고,
+    확인 후 offset을 업데이트하여 다음 호출 시 중복 방지.
+
+    Returns:
+        가장 최근 코멘트 텍스트, 없으면 None
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        return None
+
+    async def _get():
+        bot = Bot(token=token)
+        updates = await bot.get_updates()
+
+        reply = None
+        max_update_id = None
+
+        for update in updates:
+            if (update.message
+                    and update.message.text
+                    and str(update.message.chat_id) == str(chat_id)):
+                reply = update.message.text
+            if max_update_id is None or update.update_id > max_update_id:
+                max_update_id = update.update_id
+
+        # offset 업데이트하여 처리 완료 표시
+        if max_update_id is not None:
+            await bot.get_updates(offset=max_update_id + 1)
+
+        return reply
+
+    try:
+        result = asyncio.run(_get())
+        if result:
+            print(f"[Telegram] 미처리 코멘트 발견: {result[:50]}...")
+        else:
+            print("[Telegram] 미처리 코멘트 없음")
+        return result
+    except Exception as e:
+        print(f"[Telegram] 미처리 코멘트 확인 오류: {e}")
+        return None
 
 
 async def _wait_until_stopped(app):
