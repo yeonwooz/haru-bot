@@ -24,7 +24,7 @@ USAGE_LOG_PATH = os.path.join(PROJECT_ROOT, "usage_log.csv")
 from dotenv import load_dotenv
 
 import config
-from src.collectors import collect_calendar, collect_notion
+from src.collectors import collect_calendar, collect_notion, collect_github
 from src.summarizer import generate_summary
 from src.telegram_bot import send_summary, wait_for_reply, get_latest_reply
 from src.diary_store import save_diary, update_diary_comment
@@ -79,9 +79,10 @@ def run():
     print("\n--- 2단계: 데이터 수집 ---")
     calendar_data = collect_calendar(config.PERIOD_DAYS)
     notion_data = collect_notion(config.PERIOD_DAYS)
+    github_data = collect_github(config.PERIOD_DAYS)
 
-    total = len(calendar_data) + len(notion_data)
-    print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)})\n")
+    total = len(calendar_data) + len(notion_data) + len(github_data)
+    print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)})\n")
 
     # 3. 요약 생성
     print("--- 3단계: 오늘 한 일 요약 ---")
@@ -90,6 +91,7 @@ def run():
         notion_data=notion_data,
         model=config.CLAUDE_MODEL,
         max_tokens=config.MAX_TOKENS,
+        github_data=github_data,
     )
     print(f"\n{summary}\n")
 

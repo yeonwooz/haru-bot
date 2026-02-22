@@ -6,7 +6,7 @@ import anthropic
 
 
 SYSTEM_PROMPT = """당신은 사용자의 하루를 정리해주는 따뜻한 일기 도우미입니다.
-사용자의 오늘 활동 데이터(캘린더 일정, Notion 작업 내용)를 분석하여,
+사용자의 오늘 활동 데이터(캘린더 일정, Notion 작업 내용, GitHub 커밋)를 분석하여,
 오늘 한 일 중 가장 의미 있는 3가지를 골라 자연스러운 한국어로 정리합니다.
 
 출력 형식:
@@ -26,6 +26,7 @@ def generate_summary(
     notion_data: list[dict],
     model: str,
     max_tokens: int = 1000,
+    github_data: list[dict] | None = None,
 ) -> tuple[str, dict]:
     """수집된 데이터를 바탕으로 오늘 한 일 3가지를 요약한다.
 
@@ -37,7 +38,7 @@ def generate_summary(
         raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
 
     client = anthropic.Anthropic(api_key=api_key)
-    user_prompt = _build_user_prompt(calendar_data, notion_data)
+    user_prompt = _build_user_prompt(calendar_data, notion_data, github_data or [])
 
     print(f"[Summarizer] Claude API 호출 중 (모델: {model})...")
 
@@ -57,7 +58,7 @@ def generate_summary(
     return result, usage
 
 
-def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict]) -> str:
+def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict], github_data: list[dict] | None = None) -> str:
     """Claude에게 보낼 사용자 프롬프트를 구성한다."""
     sections = []
 
@@ -78,6 +79,12 @@ def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict]) -> st
             if item["excerpt"]:
                 lines.append(f"  내용: {item['excerpt']}")
         sections.append("### 오늘 Notion에서 작업한 내용\n" + "\n".join(lines))
+
+    if github_data:
+        lines = []
+        for item in github_data:
+            lines.append(f"- [{item['repo']}] {item['message']}")
+        sections.append("### 오늘 GitHub 커밋\n" + "\n".join(lines))
 
     if not sections:
         data_block = "(오늘 수집된 데이터가 없습니다. '오늘은 기록된 활동이 없어요. 직접 하루를 돌아봐 주세요!'라고 안내해주세요.)"
