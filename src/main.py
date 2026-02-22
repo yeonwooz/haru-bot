@@ -6,7 +6,7 @@
 3. Claude API로 오늘 한 일 3가지 요약 생성
 4. Telegram으로 요약 전송
 5. 오늘 일기 Notion 저장
-6. 답장 대기 (최대 6시간) → 오면 바로 Notion 업데이트
+6. 답장 대기 (최대 5분) → 오면 바로 Notion 업데이트
 """
 
 import sys
