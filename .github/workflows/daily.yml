@@ -9,7 +9,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 390 # 6시간 30분 (답장 대기 6시간 + 여유)
+    timeout-minutes: 15 # 답장 대기 5분 + 여유
 
     steps:
       - uses: actions/checkout@v4
