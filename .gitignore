@@ -4,4 +4,3 @@ __pycache__/
 .venv/
 venv/
 diary_log.json
-usage_log.csv
