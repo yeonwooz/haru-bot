@@ -89,12 +89,15 @@ def wait_for_reply(timeout: int = 21600) -> str | None:
     return reply_text
 
 
-def get_latest_reply() -> str | None:
+def get_latest_reply(consume: bool = True) -> str | None:
     """Telegram에서 미확인 메시지를 모두 가져와 합쳐서 반환한다.
 
     getUpdates API를 사용하여 처리되지 않은 메시지를 확인하고,
     여러 메시지가 있으면 줄바꿈으로 합친다.
-    확인 후 offset을 업데이트하여 다음 호출 시 중복 방지.
+
+    Args:
+        consume: True면 offset을 업데이트하여 다음 호출 시 중복 방지.
+                 False면 메시지를 확인만 하고 소비하지 않음.
 
     Returns:
         합쳐진 코멘트 텍스트, 없으면 None
@@ -120,8 +123,8 @@ def get_latest_reply() -> str | None:
             if max_update_id is None or update.update_id > max_update_id:
                 max_update_id = update.update_id
 
-        # offset 업데이트하여 처리 완료 표시
-        if max_update_id is not None:
+        # consume=True일 때만 offset 업데이트
+        if consume and max_update_id is not None:
             await bot.get_updates(offset=max_update_id + 1)
 
         return "\n".join(replies) if replies else None

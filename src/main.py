@@ -69,9 +69,11 @@ def run():
 
     # 1. 미처리 답장 확인
     print("--- 1단계: 미처리 답장 확인 ---")
-    pending_reply = get_latest_reply()
+    pending_reply = get_latest_reply(consume=False)
     if pending_reply:
-        update_diary_comment(yesterday, pending_reply)
+        if update_diary_comment(yesterday, pending_reply):
+            # 성공했으면 메시지 소비
+            get_latest_reply(consume=True)
 
     # 2. 데이터 수집
     print("\n--- 2단계: 데이터 수집 ---")
