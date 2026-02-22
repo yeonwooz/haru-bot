@@ -65,7 +65,7 @@ def wait_for_reply(timeout: int = 21600) -> str | None:
 
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        print(f"[Telegram] 코멘트 대기 중 (최대 {timeout // 3600}시간)...")
+        print(f"[Telegram] 코멘트 대기 중 (최대 {timeout // 60}분)...")
 
         async with app:
             await app.start()

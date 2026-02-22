@@ -99,10 +99,14 @@ def run():
     print("\n--- 5단계: 일기 저장 ---")
     save_diary(today, summary)
 
-    # 6. 답장 대기 (최대 6시간)
+    # 6. 답장 확인 및 대기
     if sent:
         print("\n--- 6단계: 답장 대기 ---")
-        comment = wait_for_reply(timeout=config.TELEGRAM_REPLY_TIMEOUT)
+        # 전송 중 이미 도착한 답장 확인
+        comment = get_latest_reply()
+        if not comment:
+            # 없으면 대기
+            comment = wait_for_reply(timeout=config.TELEGRAM_REPLY_TIMEOUT)
         if comment:
             update_diary_comment(today, comment)
 
