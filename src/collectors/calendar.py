@@ -37,15 +37,16 @@ def collect_calendar(period_days: int) -> list[dict]:
         print(f"[Calendar] iCloud 연결 실패: {e}")
         return []
 
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(days=period_days)
+    KST = timezone(timedelta(hours=9))
+    now_kst = datetime.now(KST)
+    start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     results = []
 
     for cal in calendars:
         try:
             events = cal.search(
                 start=start,
-                end=now,
+                end=now_kst,
                 event=True,
                 expand=True,
             )

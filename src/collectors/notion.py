@@ -1,8 +1,10 @@
 """Notion에서 최근 활동 데이터를 수집하는 모듈"""
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from notion_client import Client
+
+KST = timezone(timedelta(hours=9))
 
 
 def collect_notion(period_days: int) -> list[dict]:
@@ -21,7 +23,7 @@ def collect_notion(period_days: int) -> list[dict]:
         return []
 
     client = Client(auth=token)
-    since = datetime.now() - timedelta(days=period_days)
+    since = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0)
 
     try:
         response = client.search(
@@ -33,15 +35,23 @@ def collect_notion(period_days: int) -> list[dict]:
         print(f"[Notion] API 호출 실패: {e}")
         return []
 
+    db_name_cache = {}
     results = []
+    skipped_todo = 0
     for page in response.get("results", []):
         last_edited_str = page.get("last_edited_time", "")
         if not last_edited_str:
             continue
 
         last_edited = datetime.fromisoformat(last_edited_str.replace("Z", "+00:00"))
-        if last_edited.replace(tzinfo=None) < since:
+        if last_edited < since:
             continue
+
+        # "할일" DB 페이지는 체크박스가 체크된 것만 포함
+        if _is_in_todo_db(client, page, db_name_cache):
+            if not _has_checked_checkbox(page):
+                skipped_todo += 1
+                continue
 
         title = _extract_title(page)
         tags = _extract_tags(page)
@@ -54,8 +64,34 @@ def collect_notion(period_days: int) -> list[dict]:
             "last_edited": last_edited_str,
         })
 
-    print(f"[Notion] {len(results)}개 페이지 수집 완료")
+    print(f"[Notion] {len(results)}개 페이지 수집 완료 (미완료 할일 {skipped_todo}개 제외)")
     return results
+
+
+def _is_in_todo_db(client: Client, page: dict, cache: dict) -> bool:
+    """페이지가 이름에 '할일'이 포함된 DB에 속하는지 확인한다."""
+    parent = page.get("parent", {})
+    if parent.get("type") != "database_id":
+        return False
+
+    db_id = parent["database_id"]
+    if db_id not in cache:
+        try:
+            db = client.databases.retrieve(database_id=db_id)
+            title_parts = db.get("title", [])
+            cache[db_id] = "".join(t.get("plain_text", "") for t in title_parts)
+        except Exception:
+            cache[db_id] = ""
+
+    return "할일" in cache[db_id]
+
+
+def _has_checked_checkbox(page: dict) -> bool:
+    """페이지의 checkbox 속성 중 하나라도 체크되어 있는지 확인한다."""
+    for prop in page.get("properties", {}).values():
+        if prop.get("type") == "checkbox" and prop.get("checkbox") is True:
+            return True
+    return False
 
 
 def _extract_title(page: dict) -> str:
