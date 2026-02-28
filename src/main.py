@@ -26,8 +26,30 @@ from dotenv import load_dotenv
 import config
 from src.collectors import collect_calendar, collect_notion, collect_github
 from src.summarizer import generate_summary
-from src.telegram_bot import send_summary, wait_for_reply, get_latest_reply
-from src.diary_store import save_diary, update_diary_comment
+from src.telegram_bot import send_summary, send_message, wait_for_reply, get_all_replies
+from src.diary_store import save_diary, update_diary_comment, save_setting, load_settings, ensure_setting_column
+
+
+def _parse_messages(messages: list[str]) -> tuple[list[str], list[str]]:
+    """메시지 리스트를 일반 코멘트와 설정으로 분류한다.
+
+    Returns:
+        (comments, settings)
+    """
+    comments = []
+    settings = []
+    for msg in messages:
+        stripped = msg.strip()
+        for prefix in ("/설정 ", "/set "):
+            if stripped.startswith(prefix):
+                setting = stripped[len(prefix):].strip()
+                if setting:
+                    settings.append(setting)
+                break
+        else:
+            if stripped not in ("/설정", "/set"):
+                comments.append(msg)
+    return comments, settings
 
 
 def _calc_cost(usage: dict, model: str) -> float:
@@ -67,13 +89,28 @@ def run():
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
+    # 0. Notion DB에 setting 컬럼 확보
+    ensure_setting_column()
+
     # 1. 미처리 답장 확인
     print("--- 1단계: 미처리 답장 확인 ---")
-    pending_reply = get_latest_reply(consume=False)
-    if pending_reply:
-        if update_diary_comment(yesterday, pending_reply):
-            # 성공했으면 메시지 소비
-            get_latest_reply(consume=True)
+    pending_settings = []
+    replies = get_all_replies(consume=False)
+    if replies:
+        comments, settings = _parse_messages(replies)
+        pending_settings.extend(settings)
+
+        ok = True
+        if comments:
+            comment_text = "\n".join(comments)
+            if not update_diary_comment(yesterday, comment_text):
+                ok = False
+
+        for s in settings:
+            send_message(f"설정 저장됨: {s}")
+
+        if ok:
+            get_all_replies(consume=True)
 
     # 2. 데이터 수집
     print("\n--- 2단계: 데이터 수집 ---")
@@ -84,14 +121,17 @@ def run():
     total = len(calendar_data) + len(notion_data) + len(github_data)
     print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)})\n")
 
-    # 3. 요약 생성
+    # 3. 요약 생성 (사용자 설정 반영)
     print("--- 3단계: 오늘 한 일 요약 ---")
+    saved_settings = load_settings()
+    all_settings = saved_settings + pending_settings
     summary, usage = generate_summary(
         calendar_data=calendar_data,
         notion_data=notion_data,
         model=config.CLAUDE_MODEL,
         max_tokens=config.MAX_TOKENS,
         github_data=github_data,
+        user_settings=all_settings if all_settings else None,
     )
     print(f"\n{summary}\n")
 
@@ -99,20 +139,26 @@ def run():
     print("--- 4단계: Telegram 전송 ---")
     sent = send_summary(summary)
 
-    # 5. 오늘 일기 저장
+    # 5. 오늘 일기 저장 (대기 중 받은 설정 포함)
     print("\n--- 5단계: 일기 저장 ---")
-    save_diary(today, summary)
+    setting_text = "\n".join(pending_settings) if pending_settings else None
+    save_diary(today, summary, setting=setting_text)
 
     # 6. 답장 확인 및 대기
     if sent:
         print("\n--- 6단계: 답장 대기 ---")
-        # 전송 중 이미 도착한 답장 확인
-        comment = get_latest_reply()
-        if not comment:
-            # 없으면 대기
-            comment = wait_for_reply(timeout=config.TELEGRAM_REPLY_TIMEOUT)
-        if comment:
-            update_diary_comment(today, comment)
+        replies = get_all_replies()
+        if not replies:
+            reply = wait_for_reply(timeout=config.TELEGRAM_REPLY_TIMEOUT)
+            replies = [reply] if reply else []
+
+        if replies:
+            comments, settings = _parse_messages(replies)
+            if comments:
+                update_diary_comment(today, "\n".join(comments))
+            for s in settings:
+                save_setting(today, s)
+                send_message(f"설정 저장됨: {s}")
 
     # 7. 사용량 기록
     duration_sec = time.time() - start_time

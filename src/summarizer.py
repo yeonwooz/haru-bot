@@ -33,6 +33,7 @@ def generate_summary(
     model: str,
     max_tokens: int = 1000,
     github_data: list[dict] | None = None,
+    user_settings: list[str] | None = None,
 ) -> tuple[str, dict]:
     """수집된 데이터를 바탕으로 오늘 한 일 3가지를 요약한다.
 
@@ -46,12 +47,18 @@ def generate_summary(
     client = anthropic.Anthropic(api_key=api_key)
     user_prompt = _build_user_prompt(calendar_data, notion_data, github_data or [])
 
+    system_prompt = SYSTEM_PROMPT
+    if user_settings:
+        settings_text = "\n".join(f"- {s}" for s in user_settings)
+        system_prompt += f"\n\n사용자 지정 규칙 (반드시 따를 것):\n{settings_text}"
+        print(f"[Summarizer] 사용자 설정 {len(user_settings)}건 적용")
+
     print(f"[Summarizer] Claude API 호출 중 (모델: {model})...")
 
     message = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     )
 

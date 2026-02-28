@@ -7,6 +7,26 @@ from telegram import Bot, Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 
 
+def send_message(text: str) -> bool:
+    """Telegram으로 임의 메시지를 전송한다."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        return False
+
+    async def _send():
+        bot = Bot(token=token)
+        await bot.send_message(chat_id=chat_id, text=text)
+
+    try:
+        asyncio.run(_send())
+        return True
+    except Exception as e:
+        print(f"[Telegram] 메시지 전송 실패: {e}")
+        return False
+
+
 def send_summary(summary: str) -> bool:
     """Telegram으로 오늘의 요약을 전송한다.
 
@@ -63,7 +83,7 @@ def wait_for_reply(timeout: int = 21600) -> str | None:
                 reply_text = update.message.text
                 app.stop_running()
 
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
         print(f"[Telegram] 코멘트 대기 중 (최대 {timeout // 60}분)...")
 
@@ -89,24 +109,20 @@ def wait_for_reply(timeout: int = 21600) -> str | None:
     return reply_text
 
 
-def get_latest_reply(consume: bool = True) -> str | None:
-    """Telegram에서 미확인 메시지를 모두 가져와 합쳐서 반환한다.
-
-    getUpdates API를 사용하여 처리되지 않은 메시지를 확인하고,
-    여러 메시지가 있으면 줄바꿈으로 합친다.
+def get_all_replies(consume: bool = True) -> list[str]:
+    """Telegram에서 미확인 메시지를 개별 리스트로 반환한다.
 
     Args:
         consume: True면 offset을 업데이트하여 다음 호출 시 중복 방지.
-                 False면 메시지를 확인만 하고 소비하지 않음.
 
     Returns:
-        합쳐진 코멘트 텍스트, 없으면 None
+        개별 메시지 텍스트 리스트
     """
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
     if not token or not chat_id:
-        return None
+        return []
 
     async def _get():
         bot = Bot(token=token)
@@ -123,23 +139,31 @@ def get_latest_reply(consume: bool = True) -> str | None:
             if max_update_id is None or update.update_id > max_update_id:
                 max_update_id = update.update_id
 
-        # consume=True일 때만 offset 업데이트
         if consume and max_update_id is not None:
             await bot.get_updates(offset=max_update_id + 1)
 
-        return "\n".join(replies) if replies else None
+        return replies
 
     try:
-        result = asyncio.run(_get())
-        if result:
-            count = result.count("\n") + 1
-            print(f"[Telegram] 미처리 코멘트 {count}개 발견: {result[:50]}...")
+        replies = asyncio.run(_get())
+        if replies:
+            print(f"[Telegram] 미처리 메시지 {len(replies)}개 발견")
         else:
-            print("[Telegram] 미처리 코멘트 없음")
-        return result
+            print("[Telegram] 미처리 메시지 없음")
+        return replies
     except Exception as e:
-        print(f"[Telegram] 미처리 코멘트 확인 오류: {e}")
-        return None
+        print(f"[Telegram] 미처리 메시지 확인 오류: {e}")
+        return []
+
+
+def get_latest_reply(consume: bool = True) -> str | None:
+    """Telegram에서 미확인 메시지를 모두 가져와 합쳐서 반환한다.
+
+    Returns:
+        합쳐진 코멘트 텍스트, 없으면 None
+    """
+    replies = get_all_replies(consume=consume)
+    return "\n".join(replies) if replies else None
 
 
 async def _wait_until_stopped(app):
