@@ -42,3 +42,4 @@ date,model,input_tokens,output_tokens,cost_usd,duration_sec,source,note
 2026-04-06,claude-opus-4-6,1221,431,0.0506,323.9,bot,
 2026-04-07,claude-opus-4-6,1661,422,0.0566,319.4,bot,
 2026-04-08,claude-opus-4-6,1072,338,0.0414,323.8,bot,
+2026-04-09,claude-opus-4-6,1508,357,0.0494,321.4,bot,
