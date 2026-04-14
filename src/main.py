@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 import config
 from src.collectors import collect_calendar, collect_notion, collect_github
 from src.summarizer import generate_summary
-from src.telegram_bot import send_summary, send_message, wait_for_reply, get_all_replies
+from src.telegram_bot import send_summary, send_message, send_checklist, wait_for_reply, get_all_replies
 from src.diary_store import save_diary, update_diary_comment, save_setting, load_settings, ensure_setting_column
 
 
@@ -138,6 +138,18 @@ def run():
     # 4. Telegram 전송
     print("--- 4단계: Telegram 전송 ---")
     sent = send_summary(summary)
+
+    # 4-1. 미완료 항목 체크리스트 전송
+    if sent:
+        uncompleted = []
+        for item in calendar_data:
+            if not item.get("done"):
+                uncompleted.append(item["summary"])
+        for item in notion_data:
+            if not item.get("done"):
+                uncompleted.append(item["title"])
+        if uncompleted:
+            send_checklist(uncompleted)
 
     # 5. 오늘 일기 저장 (대기 중 받은 설정 포함)
     print("\n--- 5단계: 일기 저장 ---")

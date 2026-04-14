@@ -3,7 +3,7 @@
 import os
 import asyncio
 
-from telegram import Bot, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 
 
@@ -24,6 +24,39 @@ def send_message(text: str) -> bool:
         return True
     except Exception as e:
         print(f"[Telegram] 메시지 전송 실패: {e}")
+        return False
+
+
+def send_checklist(items: list[str]) -> bool:
+    """미완료 항목 체크리스트를 인라인 키보드와 함께 전송한다."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id or not items:
+        return False
+
+    lines = ["완료한 항목을 눌러주세요!", ""]
+    keyboard = []
+    for i, item in enumerate(items):
+        lines.append(f"{i + 1}. {item}")
+        short = item[:30] + "..." if len(item) > 30 else item
+        keyboard.append([InlineKeyboardButton(f"{short} \u2713", callback_data=f"check:{i}")])
+
+    text = "\n".join(lines)
+
+    async def _send():
+        bot = Bot(token=token)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    try:
+        asyncio.run(_send())
+        print(f"[Telegram] 체크리스트 전송 완료 ({len(items)}개 항목)")
+        return True
+    except Exception as e:
+        print(f"[Telegram] 체크리스트 전송 실패: {e}")
         return False
 
 
