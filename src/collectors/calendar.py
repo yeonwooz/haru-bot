@@ -40,13 +40,14 @@ def collect_calendar(period_days: int) -> list[dict]:
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
     results = []
 
     for cal in calendars:
         try:
             events = cal.search(
                 start=start,
-                end=now_kst,
+                end=end,
                 event=True,
                 expand=True,
             )
@@ -65,11 +66,18 @@ def collect_calendar(period_days: int) -> list[dict]:
                 dtstart = vevent.dtstart.value
                 dtend = vevent.dtend.value if hasattr(vevent, "dtend") else dtstart
 
+                # 종료 시각이 현재보다 이전이면 완료
+                if hasattr(dtend, 'hour'):
+                    done = dtend <= now_kst
+                else:
+                    done = True  # 종일 일정은 완료로 간주
+
                 results.append({
                     "summary": summary,
                     "description": description,
                     "start": str(dtstart),
                     "end": str(dtend),
+                    "done": done,
                 })
             except Exception:
                 continue

@@ -6,25 +6,38 @@ import anthropic
 
 
 SYSTEM_PROMPT = """당신은 사용자의 하루를 정리해주는 따뜻한 일기 도우미입니다.
-사용자의 오늘 활동 데이터를 분석하여,
-오늘 실제로 한 일 중 가장 의미 있는 3가지를 골라 자연스러운 한국어로 정리합니다.
+사용자의 오늘 활동 데이터를 분석하여 두 섹션으로 정리합니다.
 
 데이터 소스별 의미:
-- 캘린더 일정: 오늘 있었던 일정. 대부분 실제로 참석한 것으로 간주
-- Notion 작업 내용: 실제 작업한 내용 (할일 목록은 완료된 것만 포함됨)
-- GitHub 커밋: 실제로 한 작업
+- 캘린더 일정: 시간이 있는 일정. done=true면 완료, false면 아직 안 한 일정
+- Notion 작업 내용: 할일 DB 항목은 done 여부 확인, 일반 페이지는 작업한 내용
+- GitHub 커밋: 실제로 한 작업 (항상 완료)
 
 출력 형식:
-1. **[한 일 제목]** - 무엇을 했는지 1~2문장으로 설명
-2. **[한 일 제목]** - 무엇을 했는지 1~2문장으로 설명
-3. **[한 일 제목]** - 무엇을 했는지 1~2문장으로 설명
+[오늘의 일정]
+캘린더 일정을 오전/오후/밤으로 나누어 정리. 완료된 항목은 ✓ 표시.
+해당 시간대에 일정이 없으면 생략.
+
+오전
+- 일정 이름 ✓
+- 일정 이름
+
+오후
+- 일정 이름 ✓
+
+[태스크]
+Notion 작업, GitHub 커밋 등 시간과 무관한 항목. 완료된 것은 ✓ 표시.
+
+- 태스크 이름 ✓
+- 태스크 이름
 
 규칙:
-- 캘린더, Notion, GitHub 모든 소스를 동등하게 고려
+- 캘린더 일정은 시간 정보를 활용해 오전(~12시)/오후(12~18시)/밤(18시~)으로 분류
+- 완료 여부(done)를 정확히 반영하여 ✓ 표시
 - 딱딱한 보고서가 아닌, 친근하고 자연스러운 톤으로 작성
-- 단순 나열이 아니라, 하루의 흐름이 느껴지도록 구성
 - 데이터가 부족하면 있는 정보만으로 최선을 다해 정리
-- 이모지는 사용하지 않음"""
+- 이모지는 ✓ 외에 사용하지 않음
+- [오늘의 일정]과 [태스크] 헤더는 반드시 포함"""
 
 
 def generate_summary(
@@ -78,26 +91,28 @@ def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict], githu
     if calendar_data:
         lines = []
         for item in calendar_data:
-            lines.append(f"- {item['start']} | {item['summary']}")
+            done_mark = " (done=true)" if item.get("done") else " (done=false)"
+            lines.append(f"- {item['start']} | {item['summary']}{done_mark}")
             if item["description"]:
                 lines.append(f"  설명: {item['description']}")
-        sections.append("### 오늘 캘린더 일정\n" + "\n".join(lines))
+        sections.append("### 캘린더 일정\n" + "\n".join(lines))
 
     if notion_data:
         lines = []
         for item in notion_data:
             tags = ", ".join(item["tags"]) if item["tags"] else ""
             tag_str = f" | 태그: {tags}" if tags else ""
-            lines.append(f"- {item['title']}{tag_str}")
+            done_mark = " (done=true)" if item.get("done") else " (done=false)"
+            lines.append(f"- {item['title']}{tag_str}{done_mark}")
             if item["excerpt"]:
                 lines.append(f"  내용: {item['excerpt']}")
-        sections.append("### 오늘 Notion에서 작업한 내용\n" + "\n".join(lines))
+        sections.append("### Notion 작업/할일\n" + "\n".join(lines))
 
     if github_data:
         lines = []
         for item in github_data:
-            lines.append(f"- [{item['repo']}] {item['message']}")
-        sections.append("### 오늘 GitHub 커밋\n" + "\n".join(lines))
+            lines.append(f"- [{item['repo']}] {item['message']} (done=true)")
+        sections.append("### GitHub 커밋\n" + "\n".join(lines))
 
     if not sections:
         data_block = "(오늘 수집된 데이터가 없습니다. '오늘은 기록된 활동이 없어요. 직접 하루를 돌아봐 주세요!'라고 안내해주세요.)"
@@ -110,4 +125,6 @@ def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict], githu
 {data_block}
 ---
 
-위 데이터를 분석하여, 오늘 한 일 중 가장 의미 있는 **3가지**를 골라 정리해주세요."""
+위 데이터를 [오늘의 일정]과 [태스크] 두 섹션으로 정리해주세요.
+캘린더 일정은 시간대별(오전/오후/밤)로, 나머지는 태스크로 분류합니다.
+완료 여부(done)를 확인하여 ✓ 표시를 정확히 붙여주세요."""

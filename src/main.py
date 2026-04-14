@@ -122,7 +122,7 @@ def run():
     print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)})\n")
 
     # 3. 요약 생성 (사용자 설정 반영)
-    print("--- 3단계: 오늘 한 일 요약 ---")
+    print("--- 3단계: 오늘 하루 정리 ---")
     saved_settings = load_settings()
     all_settings = saved_settings + pending_settings
     summary, usage = generate_summary(

@@ -41,10 +41,11 @@ def send_summary(summary: str) -> bool:
         return False
 
     message = f"오늘 하루 정리\n{'=' * 20}\n\n{summary}\n\n---\n코멘트를 남겨주세요. 오늘 하루는 어땠나요?"
+    # ✓ 마크가 Markdown 파싱에 문제를 일으킬 수 있으므로 plain text로 전송
 
     async def _send():
         bot = Bot(token=token)
-        await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+        await bot.send_message(chat_id=chat_id, text=message)
 
     try:
         asyncio.run(_send())

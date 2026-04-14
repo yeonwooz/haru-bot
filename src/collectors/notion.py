@@ -47,11 +47,10 @@ def collect_notion(period_days: int) -> list[dict]:
         if last_edited < since:
             continue
 
-        # "할일" DB 페이지는 체크박스가 체크된 것만 포함
-        if _is_in_todo_db(client, page, db_name_cache):
-            if not _has_checked_checkbox(page):
-                skipped_todo += 1
-                continue
+        is_todo = _is_in_todo_db(client, page, db_name_cache)
+        done = True
+        if is_todo:
+            done = _has_checked_checkbox(page)
 
         title = _extract_title(page)
         tags = _extract_tags(page)
@@ -62,9 +61,13 @@ def collect_notion(period_days: int) -> list[dict]:
             "tags": tags,
             "excerpt": excerpt,
             "last_edited": last_edited_str,
+            "done": done,
+            "is_todo": is_todo,
         })
 
-    print(f"[Notion] {len(results)}개 페이지 수집 완료 (미완료 할일 {skipped_todo}개 제외)")
+    done_count = sum(1 for r in results if r["done"])
+    todo_count = sum(1 for r in results if not r["done"])
+    print(f"[Notion] {len(results)}개 페이지 수집 완료 (완료 {done_count}, 미완료 {todo_count})")
     return results
 
 
