@@ -15,7 +15,7 @@ def _telegram_api(method: str, data: dict) -> dict:
         data=json.dumps(data).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urlopen(req, timeout=10) as resp:
+    with urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())
 
 
@@ -28,10 +28,19 @@ def _handle_check_callback(callback_query: dict):
     message_id = message["message_id"]
     text = message["text"]
 
+    # 로딩 스피너는 무슨 일이 있어도 먼저 끈다
+    try:
+        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
+    except Exception:
+        pass
+
     if not data.startswith("check:"):
         return
 
-    index = int(data.split(":")[1])
+    try:
+        index = int(data.split(":")[1])
+    except ValueError:
+        return
 
     # 메시지 텍스트에서 해당 항목에 ✓ 추가
     lines = text.split("\n")
@@ -80,24 +89,25 @@ def _handle_check_callback(callback_query: dict):
     except Exception:
         pass  # 이미 같은 내용이면 에러 — 무시
 
-    _telegram_api("answerCallbackQuery", {
-        "callback_query_id": callback_id,
-        "text": "완료!",
-    })
-
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_length))
+        # 텔레그램 재시도를 막기 위해 어떤 경우에도 200을 반환한다.
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_length))
+            if "callback_query" in body:
+                _handle_check_callback(body["callback_query"])
+        except Exception as e:
+            print(f"[webhook] 처리 오류: {e}")
 
-        if "callback_query" in body:
-            _handle_check_callback(body["callback_query"])
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"ok": True}).encode())
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+        except Exception:
+            pass
 
     def log_message(self, format, *args):
         pass
