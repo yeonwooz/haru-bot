@@ -1,12 +1,12 @@
 """하루봇 메인 파이프라인
 
 매일 오후 8시(KST) 실행되어:
-1. 미처리 답장 확인 → 이전 일기에 코멘트 업데이트
-2. Calendar, Notion에서 오늘 활동을 수집
-3. Claude API로 오늘 한 일 3가지 요약 생성
-4. Telegram으로 요약 전송
-5. 오늘 일기 Notion 저장
-6. 답장 대기 (최대 5분) → 오면 바로 Notion 업데이트
+1. Calendar, Notion, GitHub에서 오늘 활동 수집
+2. Claude API로 오늘 한 일 요약 생성 (저장된 사용자 설정 반영)
+3. Telegram으로 요약 + 미완료 체크리스트 전송
+4. 오늘 일기 Notion 저장
+
+사용자 답장(코멘트/설정)은 Vercel webhook(api/webhook.py)이 비동기로 받아 직접 Notion에 반영한다.
 """
 
 import sys
@@ -26,30 +26,8 @@ from dotenv import load_dotenv
 import config
 from src.collectors import collect_calendar, collect_notion, collect_github
 from src.summarizer import generate_summary
-from src.telegram_bot import send_summary, send_message, send_checklist, wait_for_reply, get_all_replies
-from src.diary_store import save_diary, update_diary_comment, save_setting, load_settings, ensure_setting_column
-
-
-def _parse_messages(messages: list[str]) -> tuple[list[str], list[str]]:
-    """메시지 리스트를 일반 코멘트와 설정으로 분류한다.
-
-    Returns:
-        (comments, settings)
-    """
-    comments = []
-    settings = []
-    for msg in messages:
-        stripped = msg.strip()
-        for prefix in ("/설정 ", "/set "):
-            if stripped.startswith(prefix):
-                setting = stripped[len(prefix):].strip()
-                if setting:
-                    settings.append(setting)
-                break
-        else:
-            if stripped not in ("/설정", "/set"):
-                comments.append(msg)
-    return comments, settings
+from src.telegram_bot import send_summary, send_checklist
+from src.diary_store import save_diary, load_settings, ensure_setting_column
 
 
 def _calc_cost(usage: dict, model: str) -> float:
@@ -85,35 +63,14 @@ def run():
     load_dotenv()
     start_time = time.time()
     today = datetime.now(KST).strftime("%Y-%m-%d")
-    yesterday = (datetime.now(KST) - timedelta(days=1)).strftime("%Y-%m-%d")
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
     # 0. Notion DB에 setting 컬럼 확보
     ensure_setting_column()
 
-    # 1. 미처리 답장 확인
-    print("--- 1단계: 미처리 답장 확인 ---")
-    pending_settings = []
-    replies = get_all_replies(consume=False)
-    if replies:
-        comments, settings = _parse_messages(replies)
-        pending_settings.extend(settings)
-
-        ok = True
-        if comments:
-            comment_text = "\n".join(comments)
-            if not update_diary_comment(yesterday, comment_text):
-                ok = False
-
-        for s in settings:
-            send_message(f"설정 저장됨: {s}")
-
-        if ok:
-            get_all_replies(consume=True)
-
-    # 2. 데이터 수집
-    print("\n--- 2단계: 데이터 수집 ---")
+    # 1. 데이터 수집
+    print("--- 1단계: 데이터 수집 ---")
     calendar_data = collect_calendar(config.PERIOD_DAYS)
     notion_data = collect_notion(config.PERIOD_DAYS)
     github_data = collect_github(config.PERIOD_DAYS)
@@ -121,25 +78,24 @@ def run():
     total = len(calendar_data) + len(notion_data) + len(github_data)
     print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)})\n")
 
-    # 3. 요약 생성 (사용자 설정 반영)
-    print("--- 3단계: 오늘 하루 정리 ---")
+    # 2. 요약 생성 (사용자 설정 반영)
+    print("--- 2단계: 오늘 하루 정리 ---")
     saved_settings = load_settings()
-    all_settings = saved_settings + pending_settings
     summary, usage = generate_summary(
         calendar_data=calendar_data,
         notion_data=notion_data,
         model=config.CLAUDE_MODEL,
         max_tokens=config.MAX_TOKENS,
         github_data=github_data,
-        user_settings=all_settings if all_settings else None,
+        user_settings=saved_settings if saved_settings else None,
     )
     print(f"\n{summary}\n")
 
-    # 4. Telegram 전송
-    print("--- 4단계: Telegram 전송 ---")
+    # 3. Telegram 전송
+    print("--- 3단계: Telegram 전송 ---")
     sent = send_summary(summary)
 
-    # 4-1. 미완료 항목 체크리스트 전송
+    # 3-1. 미완료 항목 체크리스트 전송
     if sent:
         uncompleted = []
         for item in calendar_data:
@@ -151,28 +107,11 @@ def run():
         if uncompleted:
             send_checklist(uncompleted)
 
-    # 5. 오늘 일기 저장 (대기 중 받은 설정 포함)
-    print("\n--- 5단계: 일기 저장 ---")
-    setting_text = "\n".join(pending_settings) if pending_settings else None
-    save_diary(today, summary, setting=setting_text)
+    # 4. 오늘 일기 저장
+    print("\n--- 4단계: 일기 저장 ---")
+    save_diary(today, summary)
 
-    # 6. 답장 확인 및 대기
-    if sent:
-        print("\n--- 6단계: 답장 대기 ---")
-        replies = get_all_replies()
-        if not replies:
-            reply = wait_for_reply(timeout=config.TELEGRAM_REPLY_TIMEOUT)
-            replies = [reply] if reply else []
-
-        if replies:
-            comments, settings = _parse_messages(replies)
-            if comments:
-                update_diary_comment(today, "\n".join(comments))
-            for s in settings:
-                save_setting(today, s)
-                send_message(f"설정 저장됨: {s}")
-
-    # 7. 사용량 기록
+    # 5. 사용량 기록
     duration_sec = time.time() - start_time
     _log_usage(today, duration_sec, usage, config.CLAUDE_MODEL)
 
