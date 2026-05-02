@@ -95,45 +95,6 @@ def find_today_page_id(date: str) -> str | None:
     return page["id"] if page else None
 
 
-def _summary_to_blocks(summary: str) -> list[dict]:
-    """[오늘의 일정] / [태스크] 섹션 텍스트를 heading_2 + paragraph 블록 배열로 변환한다."""
-    blocks: list[dict] = []
-    section_lines: list[str] = []
-
-    def flush():
-        text = "\n".join(section_lines).strip("\n")
-        if not text.strip():
-            return
-        for chunk in text.split("\n\n"):
-            chunk = chunk.rstrip()
-            if not chunk:
-                continue
-            blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": chunk[:2000]}}],
-                },
-            })
-
-    for line in summary.split("\n"):
-        stripped = line.strip()
-        if stripped in ("[오늘의 일정]", "[태스크]"):
-            flush()
-            section_lines = []
-            blocks.append({
-                "object": "block",
-                "type": "heading_2",
-                "heading_2": {
-                    "rich_text": [{"type": "text", "text": {"content": stripped}}],
-                },
-            })
-        else:
-            section_lines.append(line)
-    flush()
-    return blocks
-
-
 def _tasks_to_rich_text(tasks: list[str]) -> list[dict]:
     if not tasks:
         return []
@@ -144,16 +105,15 @@ def _tasks_to_rich_text(tasks: list[str]) -> list[dict]:
 def save_diary(date: str, summary: str, tasks: list[str] | None = None) -> str | None:
     """오늘의 일기 페이지를 만들거나 갱신하고 page_id를 반환한다.
 
-    - 같은 날짜 페이지가 이미 있으면 properties(title, date, tasks)만 update.
-      본문(children blocks)은 사용자가 직접 메모를 적었을 수 있으므로 건드리지 않는다.
-    - 없으면 properties + children(heading_2/paragraph 블록)으로 새로 만든다.
+    title(summary 컬럼)에 요약 텍스트 전체를 넣어 list view에서 한눈에 볼 수 있게 한다.
+    같은 날짜 페이지가 있으면 properties만 update.
     """
     client, db_id = _get_client_and_db()
     if not client:
         return None
 
     properties = {
-        "summary": {"title": [{"text": {"content": date}}]},
+        "summary": {"title": [{"text": {"content": summary[:2000]}}]},
         "date": {"date": {"start": date}},
     }
     if tasks:
@@ -169,12 +129,10 @@ def save_diary(date: str, summary: str, tasks: list[str] | None = None) -> str |
             print(f"[Diary] properties 갱신 실패: {e}")
             return existing["id"]
 
-    children = _summary_to_blocks(summary)
     try:
         page = client.pages.create(
             parent={"database_id": db_id},
             properties=properties,
-            children=children,
         )
         print(f"[Diary] {date} 일기 Notion에 저장 완료")
         return page["id"]

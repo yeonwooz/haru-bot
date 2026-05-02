@@ -65,26 +65,6 @@ def _log_usage(run_date: str, duration_sec: float, usage: dict, model: str, note
     print(f"[Usage] {model}: 입력 {usage['input_tokens']}토큰, 출력 {usage['output_tokens']}토큰, 비용 ${cost:.4f}")
 
 
-def _split_summary(summary: str) -> tuple[str, str]:
-    """summary 텍스트를 ([오늘의 일정] 본문, [태스크] 본문)으로 분리한다."""
-    schedule_lines: list[str] = []
-    task_lines: list[str] = []
-    section: str | None = None
-    for line in summary.split("\n"):
-        stripped = line.strip()
-        if stripped == "[오늘의 일정]":
-            section = "schedule"
-            continue
-        if stripped == "[태스크]":
-            section = "task"
-            continue
-        if section == "schedule":
-            schedule_lines.append(line)
-        elif section == "task":
-            task_lines.append(line)
-    return "\n".join(schedule_lines).strip("\n"), "\n".join(task_lines).strip("\n")
-
-
 def _collect_uncompleted_tasks(calendar_data: list[dict], notion_data: list[dict]) -> list[str]:
     """버튼으로 토글할 미완료 태스크 raw 목록 (캘린더 + 노션 할일 중 done=false)."""
     tasks: list[str] = []
@@ -132,7 +112,6 @@ def run():
     )
     print(f"\n{summary}\n")
 
-    schedule_text, _ = _split_summary(summary)
     uncompleted_tasks = _collect_uncompleted_tasks(calendar_data, notion_data)
 
     # 3. 일기 저장 (page_id 확보)
@@ -141,7 +120,7 @@ def run():
 
     # 4. Telegram 전송
     print("--- 4단계: Telegram 전송 ---")
-    send_summary(schedule_text or summary)
+    send_summary(summary)
     if page_id and uncompleted_tasks:
         send_task_keyboard(page_id, uncompleted_tasks)
     elif not uncompleted_tasks:
