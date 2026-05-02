@@ -31,7 +31,6 @@ from src.telegram_bot import send_summary, send_task_keyboard
 from src.diary_store import (
     save_diary,
     load_settings,
-    ensure_setting_column,
     ensure_tasks_column,
     ensure_feedback_column,
 )
@@ -85,8 +84,7 @@ def run():
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
-    # 0. Notion DB 컬럼 확보
-    ensure_setting_column()
+    # 0. Notion DB 컬럼 확보 (setting 컬럼은 별도 설정 페이지로 이전됨)
     ensure_tasks_column()
     ensure_feedback_column()
 
@@ -95,16 +93,19 @@ def run():
     calendar_data = collect_calendar(config.PERIOD_DAYS)
     notion_data = collect_notion(config.PERIOD_DAYS)
     github_data = collect_github(config.PERIOD_DAYS)
-    section_todos = collect_section_todos(
+    section_uncompleted, section_completed = collect_section_todos(
         config.NOTION_TODO_PAGE_QUERY, config.NOTION_TODO_SECTION, config.CLAUDE_MODEL
     )
 
     total = len(calendar_data) + len(notion_data) + len(github_data)
-    print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)}), 섹션 to-do: {len(section_todos)}\n")
+    print(
+        f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, "
+        f"GitHub: {len(github_data)}), 섹션 미완료: {len(section_uncompleted)}, 섹션 오늘완료: {len(section_completed)}\n"
+    )
 
-    # 2. 요약 생성 (캘린더 일정이 있을 때만 Claude 호출)
+    # 2. 요약 생성 (캘린더 일정이 있거나 오늘 완료한 태스크가 있으면 Claude 호출)
     print("--- 2단계: 오늘 하루 정리 ---")
-    if calendar_data:
+    if calendar_data or section_completed:
         saved_settings = load_settings()
         summary, usage = generate_summary(
             calendar_data=calendar_data,
@@ -113,18 +114,22 @@ def run():
             max_tokens=config.MAX_TOKENS,
             github_data=github_data,
             user_settings=saved_settings if saved_settings else None,
+            completed_today=section_completed,
         )
         print(f"\n{summary}\n")
     else:
         summary = "일정 없음"
         usage = {"input_tokens": 0, "output_tokens": 0}
-        print("[Summarizer] 캘린더 일정 0개 - Claude 호출 생략, summary='일정 없음'")
+        print("[Summarizer] 캘린더 일정 0개 + 오늘 완료 태스크 0개 - Claude 호출 생략")
 
-    uncompleted_tasks = _collect_uncompleted_tasks(calendar_data, notion_data) + section_todos
+    uncompleted_tasks = _collect_uncompleted_tasks(calendar_data, notion_data) + section_uncompleted
+
+    # tasks 컬럼에 미완료([ ])와 오늘 완료([x])를 함께 저장
+    tasks_for_diary = [(t, False) for t in uncompleted_tasks] + [(t, True) for t in section_completed]
 
     # 3. 일기 저장 (page_id 확보)
     print("--- 3단계: 일기 저장 ---")
-    page_id = save_diary(today, summary, tasks=uncompleted_tasks)
+    page_id = save_diary(today, summary, tasks=tasks_for_diary)
 
     # 4. Telegram 전송
     print("--- 4단계: Telegram 전송 ---")

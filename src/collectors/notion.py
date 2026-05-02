@@ -119,31 +119,35 @@ def _extract_tags(page: dict) -> list[str]:
     return tags
 
 
-def collect_section_todos(page_query: str, section_title: str, model: str) -> list[str]:
-    """page_query 페이지의 section_title 섹션을 Claude에 통째로 보여주고 오늘 할 to-do를 받는다.
+def collect_section_todos(
+    page_query: str, section_title: str, model: str
+) -> tuple[list[str], list[str]]:
+    """page_query 페이지의 section_title 섹션에서 (오늘 미완료, 오늘 완료한) to-do를 반환한다.
 
-    Claude가 sub-section 헤더 텍스트(예: '주말에 할 일', '월요일 마다', '매일 아침')를 보고
-    오늘 활성/비활성을 판단해 최종 to-do 리스트를 만든다. 키워드 룰은 코드에 두지 않는다.
+    오늘 활성인 sub-section은 Claude가 헤더 이름(예: '주말에 할 일', '월요일 마다 할 일',
+    '매일 아침')을 보고 자연어로 판단한다. 키워드 매칭 룰은 두지 않는다.
+    'completed_today'는 활성 sub-section 안의 to-do 중 last_edited_time이 오늘 KST 날짜인 것.
     """
     token = os.environ.get("NOTION_TOKEN")
     if not token:
-        return []
+        return [], []
     client = Client(auth=token)
 
     page_id = _find_page_by_title(client, page_query)
     if not page_id:
         print(f"[Notion] '{page_query}' 페이지를 찾지 못함")
-        return []
+        return [], []
 
     blocks = _list_all_children(client, page_id)
     section_idx = _find_heading_index(blocks, section_title)
     if section_idx is None:
         print(f"[Notion] '{section_title}' heading을 찾지 못함")
-        return []
+        return [], []
 
-    sections: list[tuple[str, list[str]]] = []
+    # sub-section 별로 to-do 수집. 각 to-do는 (text, checked, last_edited_iso)
+    sections: list[tuple[str, list[tuple[str, bool, str]]]] = []
     current_heading: str | None = None
-    current_todos: list[str] = []
+    current_todos: list[tuple[str, bool, str]] = []
     for b in blocks[section_idx + 1:]:
         bt = b.get("type", "")
         if bt in ("heading_1", "heading_2", "heading_3"):
@@ -153,79 +157,94 @@ def collect_section_todos(page_query: str, section_title: str, model: str) -> li
             current_heading = heading_text.strip()
             current_todos = []
         elif bt == "to_do":
-            if not b["to_do"].get("checked", False):
-                text = "".join(rt.get("plain_text", "") for rt in b["to_do"].get("rich_text", [])).strip()
-                if text:
-                    current_todos.append(text)
+            text = "".join(rt.get("plain_text", "") for rt in b["to_do"].get("rich_text", [])).strip()
+            if not text:
+                continue
+            checked = b["to_do"].get("checked", False)
+            last_edited = b.get("last_edited_time", "")
+            current_todos.append((text, checked, last_edited))
     if current_heading is not None and current_todos:
         sections.append((current_heading, current_todos))
 
     if not sections:
-        print(f"[Notion] '{section_title}' 섹션에 미완료 to-do 없음")
-        return []
+        return [], []
 
     today = datetime.now(KST)
-    return _claude_pick_todos(sections, today, model)
+    active_headings = _claude_pick_active_headings([h for h, _ in sections], today, model)
+
+    uncompleted: list[str] = []
+    completed_today: list[str] = []
+    for heading, todos in sections:
+        if heading not in active_headings:
+            continue
+        for text, checked, last_edited in todos:
+            if not checked:
+                uncompleted.append(text)
+            elif _is_today_kst(last_edited, today):
+                completed_today.append(text)
+
+    print(
+        f"[Notion] 활성 헤더 {len(active_headings)}개, "
+        f"미완료 {len(uncompleted)}개, 오늘 완료 {len(completed_today)}개"
+    )
+    return uncompleted, completed_today
 
 
-def _claude_pick_todos(sections: list[tuple[str, list[str]]], today: datetime, model: str) -> list[str]:
-    """Claude에 sub-section 구조를 통째로 보여주고 오늘 할 to-do 텍스트만 받는다.
+def _is_today_kst(iso_ts: str, today: datetime) -> bool:
+    if not iso_ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    return dt.astimezone(KST).date() == today.date()
 
-    응답은 원본 to-do 텍스트 set과 매칭해 hallucination을 필터한다.
-    ANTHROPIC_API_KEY가 없으면 fallback으로 모든 to-do를 반환.
+
+def _claude_pick_active_headings(headings: list[str], today: datetime, model: str) -> set[str]:
+    """헤더 목록을 Claude에 보여주고 오늘 활성인 헤더 set만 받는다.
+
+    ANTHROPIC_API_KEY가 없거나 호출 실패 시 모든 헤더를 활성으로 fallback.
     """
-    valid_set: set[str] = {t for _, todos in sections for t in todos}
+    valid: set[str] = set(headings)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("[Notion] ANTHROPIC_API_KEY 미설정 - 모든 to-do 반환")
-        return list(valid_set)
+        print("[Notion] ANTHROPIC_API_KEY 미설정 - 모든 헤더 활성")
+        return valid
 
     import anthropic
 
     weekday_kr = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"][today.weekday()]
     today_str = today.strftime("%Y-%m-%d")
-
-    lines = []
-    for heading, todos in sections:
-        lines.append(f"## {heading}")
-        for t in todos:
-            lines.append(f"- {t}")
-    sections_block = "\n".join(lines)
+    headings_text = "\n".join(f"- {h}" for h in headings)
 
     user_prompt = (
         f"오늘은 {today_str} {weekday_kr}이야.\n\n"
-        f"아래는 노션 페이지의 \"할 일\" 섹션에 있는 sub-section 구조야:\n\n"
-        f"{sections_block}\n\n"
-        "각 sub-section의 헤더 이름을 보고 오늘 활성인 항목만 골라줘. "
+        f"아래는 노션 페이지의 sub-section 헤더 목록이야. 이 중 오늘 활성인 헤더만 골라줘.\n\n"
+        f"{headings_text}\n\n"
         "예: '주말에 할 일'은 토/일에만, '월요일 마다 할 일'은 월요일에만, "
-        "'매월 1일에 할 일'은 매달 1일에만, 시간/날짜 조건이 없는 헤더(예: '매일 아침', '빠른 시일 내') 는 항상 활성. "
-        "응답은 활성 to-do 텍스트만 한 줄에 하나씩, 원본 그대로(접두 '-' 같은 것도 떼고) 출력해. "
-        "헤더나 다른 설명은 절대 출력하지 마."
+        "'매월 1일에 할 일'은 매달 1일에만, 시간/날짜 조건이 없는 헤더(예: '매일 아침', '빠른 시일 내')는 항상 활성. "
+        "응답은 활성 헤더 이름만 한 줄에 하나씩, 원본 그대로 출력해. 다른 설명·접두는 붙이지 마."
     )
 
     try:
         client = anthropic.Anthropic(api_key=api_key.strip())
         msg = client.messages.create(
             model=model,
-            max_tokens=600,
+            max_tokens=400,
             messages=[{"role": "user", "content": user_prompt}],
         )
         response = msg.content[0].text.strip()
     except Exception as e:
-        print(f"[Notion] Claude 호출 실패: {e} - 모든 to-do 반환")
-        return list(valid_set)
+        print(f"[Notion] Claude 호출 실패: {e} - 모든 헤더 활성")
+        return valid
 
-    result: list[str] = []
-    seen: set[str] = set()
+    active: set[str] = set()
     for line in response.split("\n"):
         cleaned = line.strip().lstrip("-* ").strip()
-        if cleaned and cleaned in valid_set and cleaned not in seen:
-            result.append(cleaned)
-            seen.add(cleaned)
-
-    print(f"[Notion] Claude가 활성 to-do {len(result)}/{len(valid_set)}개 선정")
-    return result
+        if cleaned in valid:
+            active.add(cleaned)
+    return active
 
 
 def _find_page_by_title(client: Client, title_query: str) -> str | None:

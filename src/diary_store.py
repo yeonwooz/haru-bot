@@ -2,18 +2,21 @@
 
 데이터 모델 (Notion API 2025-09-03+: data_source 컨테이너):
 - 일기 페이지 properties:
-  - summary (title): 짧은 제목 (날짜 문자열)
+  - summary (title): 일정/완료한 태스크 요약 텍스트
   - date (date)
   - tasks (rich_text): "[ ] 항목" / "[x] 항목" 줄들
   - comment (rich_text): 사용자 답장 누적
-  - setting (rich_text): /설정 명령 누적
   - feedback (rich_text): 봇이 완료 후 보낸 의견
-- 페이지 본문(children): heading_2 + paragraph 블록으로 [오늘의 일정] / [태스크] 섹션 표시
+- 사용자 설정(/설정 명령으로 누적)은 일기 페이지가 아닌 별도 "설정 페이지"
+  본문 블록으로 누적 (NOTION_SETTINGS_PAGE_ID).
 """
 
 import os
 
 from notion_client import Client
+
+# 사용자가 /설정 X로 누적하는 봇 설정 페이지 ID (노션 환경 specific)
+NOTION_SETTINGS_PAGE_ID = "30fbb67c-a90c-8024-9ca3-ee6af0d9f223"
 
 
 def _get_client_and_db() -> tuple[Client, str] | tuple[None, None]:
@@ -55,10 +58,6 @@ def _ensure_column(prop_name: str, prop_def: dict | None = None) -> bool:
         return False
 
 
-def ensure_setting_column():
-    _ensure_column("setting")
-
-
 def ensure_tasks_column():
     _ensure_column("tasks")
 
@@ -95,14 +94,14 @@ def find_today_page_id(date: str) -> str | None:
     return page["id"] if page else None
 
 
-def _tasks_to_rich_text(tasks: list[str]) -> list[dict]:
+def _tasks_to_rich_text(tasks: list[tuple[str, bool]]) -> list[dict]:
     if not tasks:
         return []
-    text = "\n".join(f"[ ] {t}" for t in tasks)
+    text = "\n".join(f"[{'x' if done else ' '}] {t}" for t, done in tasks)
     return [{"text": {"content": text[:2000]}}]
 
 
-def save_diary(date: str, summary: str, tasks: list[str] | None = None) -> str | None:
+def save_diary(date: str, summary: str, tasks: list[tuple[str, bool]] | None = None) -> str | None:
     """오늘의 일기 페이지를 만들거나 갱신하고 page_id를 반환한다.
 
     title(summary 컬럼)에 요약 텍스트 전체를 넣어 list view에서 한눈에 볼 수 있게 한다.
@@ -255,28 +254,33 @@ def append_setting(page_id: str, setting: str) -> bool:
 
 
 def load_settings() -> list[str]:
-    """Notion diary DB에서 모든 사용자 설정을 가져온다."""
-    client, db_id = _get_client_and_db()
+    """설정 페이지 본문의 paragraph/bulleted_list_item 블록을 텍스트 리스트로 반환한다."""
+    client, _ = _get_client_and_db()
     if not client:
         return []
 
-    db_id_clean = db_id.replace("-", "")
-    settings = []
-
+    settings: list[str] = []
     try:
-        results = client.search(filter={"property": "object", "value": "page"})
-        for page in results.get("results", []):
-            parent = page.get("parent", {})
-            if parent.get("database_id", "").replace("-", "") != db_id_clean:
-                continue
-            rich_text = page["properties"].get("setting", {}).get("rich_text", [])
-            if rich_text:
-                text = rich_text[0].get("text", {}).get("content", "").strip()
-                if text:
-                    settings.append(text)
+        cursor = None
+        while True:
+            resp = client.blocks.children.list(
+                block_id=NOTION_SETTINGS_PAGE_ID,
+                page_size=100,
+                start_cursor=cursor,
+            )
+            for b in resp.get("results", []):
+                bt = b.get("type", "")
+                if bt in ("paragraph", "bulleted_list_item", "numbered_list_item", "to_do"):
+                    rich = b.get(bt, {}).get("rich_text", [])
+                    text = "".join(rt.get("plain_text", "") for rt in rich).strip()
+                    if text:
+                        settings.append(text)
+            if not resp.get("has_more"):
+                break
+            cursor = resp.get("next_cursor")
     except Exception as e:
-        print(f"[Diary] 설정 로드 실패: {e}")
+        print(f"[Diary] 설정 페이지 로드 실패: {e}")
 
     if settings:
-        print(f"[Diary] 사용자 설정 {len(settings)}건 로드됨")
+        print(f"[Diary] 설정 페이지에서 {len(settings)}건 로드")
     return settings

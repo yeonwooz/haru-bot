@@ -28,6 +28,9 @@ SETTING_BARE = ("/설정", "/set")
 CLAUDE_MODEL = "claude-opus-4-6"
 FEEDBACK_MAX_TOKENS = 400
 
+# 사용자 설정(/설정 명령) 누적용 노션 페이지 (노션 환경 specific)
+NOTION_SETTINGS_PAGE_ID = "30fbb67c-a90c-8024-9ca3-ee6af0d9f223"
+
 # 노션 Status 컬럼(select 타입)의 옵션. 인덱스가 콜백 데이터에 사용되므로 순서 변경 주의.
 STATUS_OPTIONS = ["좋아!", "별로", "낫 배드?"]
 FEEDBACK_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는 따뜻한 일기 도우미입니다.
@@ -145,6 +148,19 @@ def _save_status(client: Client, page_id: str, status_name: str):
     client.pages.update(
         page_id=page_id,
         properties={"Status": {"select": {"name": status_name}}},
+    )
+
+
+def _append_setting_to_settings_page(client: Client, setting_text: str):
+    client.blocks.children.append(
+        block_id=NOTION_SETTINGS_PAGE_ID,
+        children=[{
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {
+                "rich_text": [{"type": "text", "text": {"content": setting_text[:2000]}}],
+            },
+        }],
     )
 
 
@@ -357,18 +373,25 @@ def _handle_text_message(message: dict):
         _send_message(chat_id, "Notion 설정이 누락되어 저장하지 못했어요.")
         return
 
+    # 설정은 별도 설정 페이지 본문에 누적 (일기 페이지 무관)
+    if kind == "setting":
+        try:
+            _append_setting_to_settings_page(client, payload)
+            _send_message(chat_id, f"설정 저장됨: {payload}")
+        except Exception as e:
+            print(f"[webhook] 설정 페이지 반영 실패: {e}")
+            _send_message(chat_id, "설정 저장 중 문제가 발생했어요.")
+        return
+
+    # 코멘트는 오늘 일기에 append
     today = datetime.now(KST).strftime("%Y-%m-%d")
     try:
         page_id = _find_today_page_id(client, db_id, today)
         if not page_id:
             _send_message(chat_id, f"{today} 일기를 아직 찾지 못했어요. 봇이 오늘 요약을 보낸 뒤에 답장해 주세요.")
             return
-        if kind == "setting":
-            _append_text_prop(client, page_id, "setting", payload)
-            _send_message(chat_id, f"설정 저장됨: {payload}")
-        else:
-            _append_text_prop(client, page_id, "comment", payload)
-            _send_message(chat_id, "코멘트 저장됨")
+        _append_text_prop(client, page_id, "comment", payload)
+        _send_message(chat_id, "코멘트 저장됨")
     except Exception as e:
         print(f"[webhook] Notion 반영 실패: {e}")
         _send_message(chat_id, "저장 중 문제가 발생했어요.")

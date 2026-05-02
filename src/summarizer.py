@@ -6,13 +6,13 @@ import anthropic
 
 
 SYSTEM_PROMPT = """당신은 사용자의 하루를 정리해주는 따뜻한 일기 도우미입니다.
-사용자의 오늘 캘린더 일정을 시간대별로 정리합니다.
+사용자의 오늘 캘린더 일정과 오늘 완료한 태스크를 자연스럽게 한 글에 녹여 정리합니다.
 
 데이터 소스별 의미:
-- 캘린더 일정: 시간이 있는 일정 (이것만 출력에 사용)
-- Notion 작업 내용 / GitHub 커밋: 컨텍스트 참고용 (출력에는 포함하지 않음)
+- 캘린더 일정: 시간이 있는 일정 (오전/오후/밤으로 분류)
+- 오늘 완료한 태스크: 노션 "할 일" 페이지에서 오늘 체크된 항목들 (시간 무관)
 
-출력 형식:
+출력 형식 예시:
 오전
 - 일정 이름
 - 일정 이름
@@ -23,10 +23,15 @@ SYSTEM_PROMPT = """당신은 사용자의 하루를 정리해주는 따뜻한 �
 밤
 - 일정 이름
 
+오늘 한 일
+- 완료한 태스크 이름
+- 완료한 태스크 이름
+
 규칙:
-- 캘린더 일정만 사용. 시간 정보로 오전(~12시)/오후(12~18시)/밤(18시~)으로 분류
+- 캘린더 일정은 시간 정보로 오전(~12시)/오후(12~18시)/밤(18시~)으로 분류
 - 해당 시간대에 일정이 없으면 그 시간대 헤더는 생략
-- 완료/미완료 표시(✓)는 사용하지 않는다 (있던 일정 자체만 나열)
+- 완료한 태스크는 "오늘 한 일" 헤더 아래로 모음. 없으면 "오늘 한 일" 헤더 자체 생략
+- 완료/미완료 표시(✓) 같은 마크는 사용하지 않는다
 - 이모지·헤더 라벨([오늘의 일정] 같은 것)은 사용하지 않음
 - 딱딱한 보고서가 아닌, 친근하고 자연스러운 톤
 - 데이터가 부족하면 있는 정보만으로 정리"""
@@ -39,6 +44,7 @@ def generate_summary(
     max_tokens: int = 1000,
     github_data: list[dict] | None = None,
     user_settings: list[str] | None = None,
+    completed_today: list[str] | None = None,
 ) -> tuple[str, dict]:
     """수집된 데이터를 바탕으로 오늘 한 일 3가지를 요약한다.
 
@@ -50,7 +56,7 @@ def generate_summary(
         raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
 
     client = anthropic.Anthropic(api_key=api_key)
-    user_prompt = _build_user_prompt(calendar_data, notion_data, github_data or [])
+    user_prompt = _build_user_prompt(calendar_data, notion_data, github_data or [], completed_today or [])
 
     system_prompt = SYSTEM_PROMPT
     if user_settings:
@@ -126,7 +132,12 @@ def generate_feedback(
     return result, usage
 
 
-def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict], github_data: list[dict] | None = None) -> str:
+def _build_user_prompt(
+    calendar_data: list[dict],
+    notion_data: list[dict],
+    github_data: list[dict] | None = None,
+    completed_today: list[str] | None = None,
+) -> str:
     """Claude에게 보낼 사용자 프롬프트를 구성한다."""
     sections = []
 
@@ -155,6 +166,10 @@ def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict], githu
         for item in github_data:
             lines.append(f"- [{item['repo']}] {item['message']} (done=true)")
         sections.append("### GitHub 커밋\n" + "\n".join(lines))
+
+    if completed_today:
+        lines = [f"- {t}" for t in completed_today]
+        sections.append("### 오늘 완료한 태스크 (노션 할 일 페이지)\n" + "\n".join(lines))
 
     if not sections:
         data_block = "(오늘 수집된 데이터가 없습니다. '오늘은 기록된 활동이 없어요. 직접 하루를 돌아봐 주세요!'라고 안내해주세요.)"
