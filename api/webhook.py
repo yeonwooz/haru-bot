@@ -27,6 +27,9 @@ SETTING_BARE = ("/설정", "/set")
 
 CLAUDE_MODEL = "claude-opus-4-6"
 FEEDBACK_MAX_TOKENS = 400
+
+# 노션 Status 컬럼(select 타입)의 옵션. 인덱스가 콜백 데이터에 사용되므로 순서 변경 주의.
+STATUS_OPTIONS = ["좋아!", "별로", "낫 배드?"]
 FEEDBACK_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는 따뜻한 일기 도우미입니다.
 사용자가 오늘 완료한 태스크와 못한 태스크를 보고, 3~5줄로 짧게 의견을 줍니다.
 
@@ -135,6 +138,13 @@ def _save_feedback(client: Client, page_id: str, feedback: str):
     client.pages.update(
         page_id=page_id,
         properties={"feedback": {"rich_text": [{"text": {"content": feedback[:2000]}}]}},
+    )
+
+
+def _save_status(client: Client, page_id: str, status_name: str):
+    client.pages.update(
+        page_id=page_id,
+        properties={"Status": {"select": {"name": status_name}}},
     )
 
 
@@ -249,6 +259,59 @@ def _handle_done(callback_query: dict, pid_short: str):
     except Exception as e:
         print(f"[webhook] 피드백 처리 실패: {e}")
         _send_message(chat_id, "피드백 생성 중 문제가 발생했어요.")
+        return
+
+    # 피드백 후 status 키보드 송출
+    _send_status_keyboard(chat_id, pid_short)
+
+
+def _send_status_keyboard(chat_id: int, pid_short: str):
+    keyboard = [
+        [{"text": opt, "callback_data": f"s:{pid_short}:{i}"}]
+        for i, opt in enumerate(STATUS_OPTIONS)
+    ]
+    try:
+        _telegram_api("sendMessage", {
+            "chat_id": chat_id,
+            "text": "오늘 하루 어땠어?",
+            "reply_markup": {"inline_keyboard": keyboard},
+        })
+    except Exception as e:
+        print(f"[webhook] status 키보드 전송 실패: {e}")
+
+
+def _handle_status(callback_query: dict, pid_short: str, index: int):
+    callback_id = callback_query["id"]
+    message = callback_query["message"]
+    chat_id = message["chat"]["id"]
+    message_id = message["message_id"]
+
+    try:
+        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
+    except Exception:
+        pass
+
+    if index < 0 or index >= len(STATUS_OPTIONS):
+        return
+    name = STATUS_OPTIONS[index]
+
+    client, _ = _notion_client_and_db()
+    if not client:
+        return
+
+    try:
+        _save_status(client, pid_short, name)
+        try:
+            _telegram_api("editMessageText", {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": f'오늘 하루는 "{name}". 기록했어.',
+                "reply_markup": {"inline_keyboard": []},
+            })
+        except Exception as e:
+            print(f"[webhook] status 메시지 갱신 실패: {e}")
+    except Exception as e:
+        print(f"[webhook] status 저장 실패: {e}")
 
 
 def _handle_legacy_check(callback_query: dict):
@@ -333,6 +396,14 @@ class handler(BaseHTTPRequestHandler):
                     parts = data.split(":")
                     if len(parts) == 2:
                         _handle_done(cq, parts[1])
+                elif data.startswith("s:"):
+                    parts = data.split(":")
+                    if len(parts) == 3:
+                        try:
+                            idx = int(parts[2])
+                            _handle_status(cq, parts[1], idx)
+                        except ValueError:
+                            pass
                 elif data.startswith("check:"):
                     _handle_legacy_check(cq)
             elif "message" in body and body["message"].get("text"):
