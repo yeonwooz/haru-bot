@@ -25,7 +25,7 @@ USAGE_LOG_PATH = os.path.join(PROJECT_ROOT, "usage_log.csv")
 from dotenv import load_dotenv
 
 import config
-from src.collectors import collect_calendar, collect_notion, collect_github
+from src.collectors import collect_calendar, collect_notion, collect_section_todos, collect_github
 from src.summarizer import generate_summary
 from src.telegram_bot import send_summary, send_task_keyboard
 from src.diary_store import (
@@ -95,24 +95,32 @@ def run():
     calendar_data = collect_calendar(config.PERIOD_DAYS)
     notion_data = collect_notion(config.PERIOD_DAYS)
     github_data = collect_github(config.PERIOD_DAYS)
+    section_todos = collect_section_todos(
+        config.NOTION_TODO_PAGE_QUERY, config.NOTION_TODO_SECTION, config.CLAUDE_MODEL
+    )
 
     total = len(calendar_data) + len(notion_data) + len(github_data)
-    print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)})\n")
+    print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)}), 섹션 to-do: {len(section_todos)}\n")
 
-    # 2. 요약 생성
+    # 2. 요약 생성 (캘린더 일정이 있을 때만 Claude 호출)
     print("--- 2단계: 오늘 하루 정리 ---")
-    saved_settings = load_settings()
-    summary, usage = generate_summary(
-        calendar_data=calendar_data,
-        notion_data=notion_data,
-        model=config.CLAUDE_MODEL,
-        max_tokens=config.MAX_TOKENS,
-        github_data=github_data,
-        user_settings=saved_settings if saved_settings else None,
-    )
-    print(f"\n{summary}\n")
+    if calendar_data:
+        saved_settings = load_settings()
+        summary, usage = generate_summary(
+            calendar_data=calendar_data,
+            notion_data=notion_data,
+            model=config.CLAUDE_MODEL,
+            max_tokens=config.MAX_TOKENS,
+            github_data=github_data,
+            user_settings=saved_settings if saved_settings else None,
+        )
+        print(f"\n{summary}\n")
+    else:
+        summary = "일정 없음"
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        print("[Summarizer] 캘린더 일정 0개 - Claude 호출 생략, summary='일정 없음'")
 
-    uncompleted_tasks = _collect_uncompleted_tasks(calendar_data, notion_data)
+    uncompleted_tasks = _collect_uncompleted_tasks(calendar_data, notion_data) + section_todos
 
     # 3. 일기 저장 (page_id 확보)
     print("--- 3단계: 일기 저장 ---")
@@ -120,7 +128,10 @@ def run():
 
     # 4. Telegram 전송
     print("--- 4단계: Telegram 전송 ---")
-    send_summary(summary)
+    if calendar_data:
+        send_summary(summary)
+    else:
+        print("[Telegram] 캘린더 일정 0개 - 일정 요약 메시지 생략")
     if page_id and uncompleted_tasks:
         send_task_keyboard(page_id, uncompleted_tasks)
     elif not uncompleted_tasks:
