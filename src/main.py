@@ -1,12 +1,13 @@
 """하루봇 메인 파이프라인
 
 매일 오후 8시(KST) 실행되어:
-1. Calendar, Notion, GitHub에서 오늘 활동 수집
-2. Claude API로 오늘 한 일 요약 생성 (저장된 사용자 설정 반영)
-3. Telegram으로 요약 + 미완료 체크리스트 전송
-4. 오늘 일기 Notion 저장
+1. Calendar / Notion / GitHub에서 오늘 활동 수집
+2. Claude API로 [오늘의 일정] + [태스크] 두 섹션 요약 생성
+3. Notion 일기 페이지 생성 (본문은 heading_2 + paragraph 블록, tasks는 [ ] 체크박스 rich_text)
+4. Telegram에 일정 요약(텍스트) + 태스크 토글 키보드(미완료 항목 + 🏁 완료 버튼) 전송
+5. 사용자가 🏁 완료를 누르면 webhook이 피드백 생성·저장 (api/webhook.py)
 
-사용자 답장(코멘트/설정)은 Vercel webhook(api/webhook.py)이 비동기로 받아 직접 Notion에 반영한다.
+사용자 답장(코멘트/설정)은 Vercel webhook이 비동기로 받아 직접 Notion에 반영한다.
 """
 
 import sys
@@ -26,8 +27,14 @@ from dotenv import load_dotenv
 import config
 from src.collectors import collect_calendar, collect_notion, collect_github
 from src.summarizer import generate_summary
-from src.telegram_bot import send_summary, send_checklist
-from src.diary_store import save_diary, load_settings, ensure_setting_column
+from src.telegram_bot import send_summary, send_task_keyboard
+from src.diary_store import (
+    save_diary,
+    load_settings,
+    ensure_setting_column,
+    ensure_tasks_column,
+    ensure_feedback_column,
+)
 
 
 def _calc_cost(usage: dict, model: str) -> float:
@@ -58,6 +65,38 @@ def _log_usage(run_date: str, duration_sec: float, usage: dict, model: str, note
     print(f"[Usage] {model}: 입력 {usage['input_tokens']}토큰, 출력 {usage['output_tokens']}토큰, 비용 ${cost:.4f}")
 
 
+def _split_summary(summary: str) -> tuple[str, str]:
+    """summary 텍스트를 ([오늘의 일정] 본문, [태스크] 본문)으로 분리한다."""
+    schedule_lines: list[str] = []
+    task_lines: list[str] = []
+    section: str | None = None
+    for line in summary.split("\n"):
+        stripped = line.strip()
+        if stripped == "[오늘의 일정]":
+            section = "schedule"
+            continue
+        if stripped == "[태스크]":
+            section = "task"
+            continue
+        if section == "schedule":
+            schedule_lines.append(line)
+        elif section == "task":
+            task_lines.append(line)
+    return "\n".join(schedule_lines).strip("\n"), "\n".join(task_lines).strip("\n")
+
+
+def _collect_uncompleted_tasks(calendar_data: list[dict], notion_data: list[dict]) -> list[str]:
+    """버튼으로 토글할 미완료 태스크 raw 목록 (캘린더 + 노션 할일 중 done=false)."""
+    tasks: list[str] = []
+    for item in calendar_data:
+        if not item.get("done"):
+            tasks.append(item["summary"])
+    for item in notion_data:
+        if not item.get("done"):
+            tasks.append(item["title"])
+    return tasks
+
+
 def run():
     """전체 파이프라인을 실행한다."""
     load_dotenv()
@@ -66,8 +105,10 @@ def run():
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
-    # 0. Notion DB에 setting 컬럼 확보
+    # 0. Notion DB 컬럼 확보
     ensure_setting_column()
+    ensure_tasks_column()
+    ensure_feedback_column()
 
     # 1. 데이터 수집
     print("--- 1단계: 데이터 수집 ---")
@@ -78,7 +119,7 @@ def run():
     total = len(calendar_data) + len(notion_data) + len(github_data)
     print(f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, GitHub: {len(github_data)})\n")
 
-    # 2. 요약 생성 (사용자 설정 반영)
+    # 2. 요약 생성
     print("--- 2단계: 오늘 하루 정리 ---")
     saved_settings = load_settings()
     summary, usage = generate_summary(
@@ -91,25 +132,20 @@ def run():
     )
     print(f"\n{summary}\n")
 
-    # 3. Telegram 전송
-    print("--- 3단계: Telegram 전송 ---")
-    sent = send_summary(summary)
+    schedule_text, _ = _split_summary(summary)
+    uncompleted_tasks = _collect_uncompleted_tasks(calendar_data, notion_data)
 
-    # 3-1. 미완료 항목 체크리스트 전송
-    if sent:
-        uncompleted = []
-        for item in calendar_data:
-            if not item.get("done"):
-                uncompleted.append(item["summary"])
-        for item in notion_data:
-            if not item.get("done"):
-                uncompleted.append(item["title"])
-        if uncompleted:
-            send_checklist(uncompleted)
+    # 3. 일기 저장 (page_id 확보)
+    print("--- 3단계: 일기 저장 ---")
+    page_id = save_diary(today, summary, tasks=uncompleted_tasks)
 
-    # 4. 오늘 일기 저장
-    print("\n--- 4단계: 일기 저장 ---")
-    save_diary(today, summary)
+    # 4. Telegram 전송
+    print("--- 4단계: Telegram 전송 ---")
+    send_summary(schedule_text or summary)
+    if page_id and uncompleted_tasks:
+        send_task_keyboard(page_id, uncompleted_tasks)
+    elif not uncompleted_tasks:
+        print("[Telegram] 미완료 태스크 없음 - 태스크 키보드 생략")
 
     # 5. 사용량 기록
     duration_sec = time.time() - start_time

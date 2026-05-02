@@ -84,6 +84,56 @@ def generate_summary(
     return result, usage
 
 
+FEEDBACK_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는 따뜻한 일기 도우미입니다.
+사용자가 오늘 완료한 태스크와 못한 태스크를 보고, 3~5줄로 짧게 의견을 줍니다.
+
+규칙:
+- 친근하고 자연스러운 반말 톤
+- 완료한 것이 있으면 구체적으로 짚어 칭찬
+- 못한 것에 대해서는 자책하지 않게 위로하거나 가볍게 넘김
+- 완료한 게 0개여도 격려 톤 유지 (오늘 하루 자체는 의미 있다는 뉘앙스)
+- 이모지·헤더 사용 금지, 일반 문장으로만"""
+
+
+def generate_feedback(
+    completed: list[str],
+    uncompleted: list[str],
+    model: str,
+    max_tokens: int = 400,
+) -> tuple[str, dict]:
+    """완료/미완료 태스크 리스트로 피드백 메시지를 생성한다."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    done_text = "\n".join(f"- {t}" for t in completed) if completed else "(없음)"
+    undone_text = "\n".join(f"- {t}" for t in uncompleted) if uncompleted else "(없음)"
+    user_prompt = (
+        f"오늘 완료한 태스크:\n{done_text}\n\n"
+        f"오늘 못한 태스크:\n{undone_text}\n\n"
+        "위를 보고 3~5줄로 의견을 줘."
+    )
+
+    print(f"[Summarizer] 피드백 생성 중 (완료 {len(completed)}건, 미완료 {len(uncompleted)}건)")
+
+    message = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=[{"type": "text", "text": FEEDBACK_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+
+    result = message.content[0].text
+    usage = {
+        "input_tokens": message.usage.input_tokens,
+        "output_tokens": message.usage.output_tokens,
+    }
+    print(f"[Summarizer] 피드백 생성 완료 ({len(result)}자, 입력 {usage['input_tokens']}토큰, 출력 {usage['output_tokens']}토큰)")
+    return result, usage
+
+
 def _build_user_prompt(calendar_data: list[dict], notion_data: list[dict], github_data: list[dict] | None = None) -> str:
     """Claude에게 보낼 사용자 프롬프트를 구성한다."""
     sections = []

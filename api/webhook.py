@@ -1,4 +1,15 @@
-"""Telegram 인라인 키보드 콜백 + 사용자 답장(코멘트/설정)을 처리하는 Vercel 서버리스 함수"""
+"""Telegram 콜백/메시지를 처리하는 Vercel 서버리스 함수.
+
+콜백:
+- t:{pid}:{idx} — tasks 토글 + 키보드 갱신
+- done:{pid} — 키보드 제거 + Claude 피드백 생성 + 노션 feedback 저장 + Telegram 전송
+- check:{idx} — legacy, 무시
+
+메시지:
+- 일반 텍스트 → 오늘 일기 comment append
+- /설정 X / /set X → 오늘 일기 setting append
+- 봇 자기 메시지(from.is_bot)는 무시
+"""
 
 import json
 import os
@@ -6,15 +17,27 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 from urllib.request import Request, urlopen
 
+import anthropic
 from notion_client import Client
 
 KST = timezone(timedelta(hours=9))
 SETTING_PREFIXES = ("/설정 ", "/set ")
 SETTING_BARE = ("/설정", "/set")
 
+CLAUDE_MODEL = "claude-opus-4-6"
+FEEDBACK_MAX_TOKENS = 400
+FEEDBACK_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는 따뜻한 일기 도우미입니다.
+사용자가 오늘 완료한 태스크와 못한 태스크를 보고, 3~5줄로 짧게 의견을 줍니다.
+
+규칙:
+- 친근하고 자연스러운 반말 톤
+- 완료한 것이 있으면 구체적으로 짚어 칭찬
+- 못한 것에 대해서는 자책하지 않게 위로하거나 가볍게 넘김
+- 완료한 게 0개여도 격려 톤 유지 (오늘 하루 자체는 의미 있다는 뉘앙스)
+- 이모지·헤더 사용 금지, 일반 문장으로만"""
+
 
 def _telegram_api(method: str, data: dict) -> dict:
-    """Telegram Bot API를 호출한다."""
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     url = f"https://api.telegram.org/bot{token}/{method}"
     req = Request(
@@ -22,15 +45,15 @@ def _telegram_api(method: str, data: dict) -> dict:
         data=json.dumps(data).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urlopen(req, timeout=5) as resp:
+    with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
 
-def _send_reply(chat_id: int, text: str):
+def _send_message(chat_id: int, text: str):
     try:
         _telegram_api("sendMessage", {"chat_id": chat_id, "text": text})
     except Exception as e:
-        print(f"[webhook] 답장 전송 실패: {e}")
+        print(f"[webhook] sendMessage 실패: {e}")
 
 
 def _notion_client_and_db():
@@ -41,7 +64,33 @@ def _notion_client_and_db():
     return Client(auth=token), db_id
 
 
-def _find_diary_page(client: Client, db_id: str, date: str) -> str | None:
+# --- Notion helpers ---
+
+def _read_tasks(client: Client, page_id: str):
+    page = client.pages.retrieve(page_id=page_id)
+    rich = page["properties"].get("tasks", {}).get("rich_text", [])
+    if not rich:
+        return []
+    text = rich[0].get("text", {}).get("content", "")
+    items = []
+    for line in text.split("\n"):
+        line = line.rstrip()
+        if line.startswith("[x] ") or line.startswith("[X] "):
+            items.append((line[4:], True))
+        elif line.startswith("[ ] "):
+            items.append((line[4:], False))
+    return items
+
+
+def _write_tasks(client: Client, page_id: str, items: list[tuple[str, bool]]):
+    new_text = "\n".join(f"[{'x' if d else ' '}] {t}" for t, d in items)
+    client.pages.update(
+        page_id=page_id,
+        properties={"tasks": {"rich_text": [{"text": {"content": new_text[:2000]}}]}},
+    )
+
+
+def _find_today_page_id(client: Client, db_id: str, date: str) -> str | None:
     db_id_clean = db_id.replace("-", "")
     results = client.search(filter={"property": "object", "value": "page"})
     for page in results.get("results", []):
@@ -54,30 +103,149 @@ def _find_diary_page(client: Client, db_id: str, date: str) -> str | None:
     return None
 
 
-def _append_comment(client: Client, page_id: str, comment: str):
+def _append_text_prop(client: Client, page_id: str, prop: str, text: str):
     page = client.pages.retrieve(page_id=page_id)
-    rich_text = page["properties"].get("comment", {}).get("rich_text", [])
-    existing = rich_text[0].get("text", {}).get("content", "") if rich_text else ""
-    new_text = f"{existing}\n{comment}" if existing else comment
+    rich = page["properties"].get(prop, {}).get("rich_text", [])
+    existing = rich[0].get("text", {}).get("content", "") if rich else ""
+    new_text = f"{existing}\n{text}" if existing else text
     client.pages.update(
         page_id=page_id,
-        properties={"comment": {"rich_text": [{"text": {"content": new_text[:2000]}}]}},
+        properties={prop: {"rich_text": [{"text": {"content": new_text[:2000]}}]}},
     )
 
 
-def _append_setting(client: Client, page_id: str, setting: str):
-    page = client.pages.retrieve(page_id=page_id)
-    rich_text = page["properties"].get("setting", {}).get("rich_text", [])
-    existing = rich_text[0].get("text", {}).get("content", "") if rich_text else ""
-    new_text = f"{existing}\n{setting}" if existing else setting
+def _save_feedback(client: Client, page_id: str, feedback: str):
     client.pages.update(
         page_id=page_id,
-        properties={"setting": {"rich_text": [{"text": {"content": new_text[:2000]}}]}},
+        properties={"feedback": {"rich_text": [{"text": {"content": feedback[:2000]}}]}},
     )
 
 
-def _classify(text: str) -> tuple[str, str | None]:
-    """답장을 (kind, payload)로 분류한다. kind ∈ {"comment", "setting", "ignore"}."""
+# --- Claude feedback ---
+
+def _generate_feedback(completed: list[str], uncompleted: list[str]) -> str:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY 미설정")
+    client = anthropic.Anthropic(api_key=api_key)
+    done_text = "\n".join(f"- {t}" for t in completed) if completed else "(없음)"
+    undone_text = "\n".join(f"- {t}" for t in uncompleted) if uncompleted else "(없음)"
+    user_prompt = (
+        f"오늘 완료한 태스크:\n{done_text}\n\n"
+        f"오늘 못한 태스크:\n{undone_text}\n\n"
+        "위를 보고 3~5줄로 의견을 줘."
+    )
+    msg = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=FEEDBACK_MAX_TOKENS,
+        system=[{"type": "text", "text": FEEDBACK_SYSTEM_PROMPT}],
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    return msg.content[0].text
+
+
+# --- Callback handlers ---
+
+def _build_task_keyboard(items: list[tuple[str, bool]], pid_short: str):
+    keyboard = []
+    for i, (t, d) in enumerate(items):
+        label = (t[:40] + "...") if len(t) > 40 else t
+        mark = "☑" if d else "☐"
+        keyboard.append([{"text": f"{mark} {label}", "callback_data": f"t:{pid_short}:{i}"}])
+    keyboard.append([{"text": "🏁 완료", "callback_data": f"done:{pid_short}"}])
+    return keyboard
+
+
+def _handle_toggle(callback_query: dict, pid_short: str, index: int):
+    callback_id = callback_query["id"]
+    message = callback_query["message"]
+    chat_id = message["chat"]["id"]
+    message_id = message["message_id"]
+
+    try:
+        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
+    except Exception:
+        pass
+
+    client, _ = _notion_client_and_db()
+    if not client:
+        return
+
+    try:
+        items = _read_tasks(client, pid_short)
+        if index < 0 or index >= len(items):
+            return
+        text, done = items[index]
+        items[index] = (text, not done)
+        _write_tasks(client, pid_short, items)
+
+        try:
+            _telegram_api("editMessageReplyMarkup", {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": {"inline_keyboard": _build_task_keyboard(items, pid_short)},
+            })
+        except Exception as e:
+            print(f"[webhook] editMessageReplyMarkup 실패: {e}")
+    except Exception as e:
+        print(f"[webhook] 토글 처리 실패: {e}")
+
+
+def _handle_done(callback_query: dict, pid_short: str):
+    callback_id = callback_query["id"]
+    message = callback_query["message"]
+    chat_id = message["chat"]["id"]
+    message_id = message["message_id"]
+
+    try:
+        _telegram_api("answerCallbackQuery", {
+            "callback_query_id": callback_id,
+            "text": "피드백 생성 중...",
+        })
+    except Exception:
+        pass
+
+    try:
+        _telegram_api("editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": {"inline_keyboard": []},
+        })
+    except Exception:
+        pass
+
+    client, _ = _notion_client_and_db()
+    if not client:
+        _send_message(chat_id, "Notion 설정이 없어 피드백 저장을 못했어요.")
+        return
+
+    try:
+        items = _read_tasks(client, pid_short)
+        completed = [t for t, d in items if d]
+        uncompleted = [t for t, d in items if not d]
+        feedback = _generate_feedback(completed, uncompleted)
+        _send_message(chat_id, feedback)
+        try:
+            _save_feedback(client, pid_short, feedback)
+        except Exception as e:
+            print(f"[webhook] feedback 저장 실패: {e}")
+    except Exception as e:
+        print(f"[webhook] 피드백 처리 실패: {e}")
+        _send_message(chat_id, "피드백 생성 중 문제가 발생했어요.")
+
+
+def _handle_legacy_check(callback_query: dict):
+    callback_id = callback_query["id"]
+    try:
+        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
+    except Exception:
+        pass
+    print("[webhook] legacy check: 콜백 - 무시")
+
+
+# --- Text message handler ---
+
+def _classify_text(text: str) -> tuple[str, str | None]:
     stripped = text.strip()
     for prefix in SETTING_PREFIXES:
         if stripped.startswith(prefix):
@@ -89,123 +257,67 @@ def _classify(text: str) -> tuple[str, str | None]:
 
 
 def _handle_text_message(message: dict):
-    """사용자 텍스트 답장을 처리해 오늘 일기에 반영한다."""
+    if message.get("from", {}).get("is_bot"):
+        return
     chat_id = message["chat"]["id"]
     expected = os.environ.get("TELEGRAM_CHAT_ID")
     if expected and str(chat_id) != str(expected):
-        return  # 다른 채팅은 무시
+        return
 
     text = message.get("text", "")
     if not text:
         return
 
-    kind, payload = _classify(text)
+    kind, payload = _classify_text(text)
     if kind == "ignore":
         return
 
     client, db_id = _notion_client_and_db()
     if not client:
-        _send_reply(chat_id, "Notion 설정이 누락되어 저장하지 못했어요.")
+        _send_message(chat_id, "Notion 설정이 누락되어 저장하지 못했어요.")
         return
 
     today = datetime.now(KST).strftime("%Y-%m-%d")
-
     try:
-        page_id = _find_diary_page(client, db_id, today)
+        page_id = _find_today_page_id(client, db_id, today)
         if not page_id:
-            _send_reply(chat_id, f"{today} 일기를 아직 찾지 못했어요. 봇이 오늘 요약을 보낸 뒤에 답장해 주세요.")
+            _send_message(chat_id, f"{today} 일기를 아직 찾지 못했어요. 봇이 오늘 요약을 보낸 뒤에 답장해 주세요.")
             return
-
         if kind == "setting":
-            _append_setting(client, page_id, payload)
-            _send_reply(chat_id, f"설정 저장됨: {payload}")
+            _append_text_prop(client, page_id, "setting", payload)
+            _send_message(chat_id, f"설정 저장됨: {payload}")
         else:
-            _append_comment(client, page_id, payload)
-            _send_reply(chat_id, "코멘트 저장됨")
+            _append_text_prop(client, page_id, "comment", payload)
+            _send_message(chat_id, "코멘트 저장됨")
     except Exception as e:
         print(f"[webhook] Notion 반영 실패: {e}")
-        _send_reply(chat_id, "저장 중 문제가 발생했어요.")
+        _send_message(chat_id, "저장 중 문제가 발생했어요.")
 
 
-def _handle_check_callback(callback_query: dict):
-    """체크리스트 버튼 콜백을 처리한다."""
-    callback_id = callback_query["id"]
-    data = callback_query.get("data", "")
-    message = callback_query["message"]
-    chat_id = message["chat"]["id"]
-    message_id = message["message_id"]
-    text = message["text"]
-
-    # 로딩 스피너는 무슨 일이 있어도 먼저 끈다
-    try:
-        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
-    except Exception:
-        pass
-
-    if not data.startswith("check:"):
-        return
-
-    try:
-        index = int(data.split(":")[1])
-    except ValueError:
-        return
-
-    # 메시지 텍스트에서 해당 항목에 ✓ 추가
-    lines = text.split("\n")
-    item_idx = 0
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and stripped[0].isdigit() and ". " in stripped:
-            if item_idx == index and "✓" not in line:
-                lines[i] = line + " ✓"
-            item_idx += 1
-
-    new_text = "\n".join(lines)
-
-    # 남은 미완료 항목으로 키보드 재구성
-    unchecked = []
-    item_idx = 0
-    for line in lines:
-        stripped = line.strip()
-        if stripped and stripped[0].isdigit() and ". " in stripped:
-            if "✓" not in stripped:
-                name = stripped.split(". ", 1)[1]
-                short = name[:30] + "..." if len(name) > 30 else name
-                unchecked.append({"idx": item_idx, "name": short})
-            item_idx += 1
-
-    if not unchecked:
-        new_text += "\n\n모두 완료! 오늘도 수고하셨습니다 :)"
-
-    edit_data = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": new_text,
-    }
-
-    if unchecked:
-        keyboard = [
-            [{"text": f"{item['name']} ✓", "callback_data": f"check:{item['idx']}"}]
-            for item in unchecked
-        ]
-        edit_data["reply_markup"] = {"inline_keyboard": keyboard}
-    else:
-        edit_data["reply_markup"] = {"inline_keyboard": []}
-
-    try:
-        _telegram_api("editMessageText", edit_data)
-    except Exception:
-        pass  # 이미 같은 내용이면 에러 — 무시
-
+# --- HTTP handler ---
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # 텔레그램 재시도를 막기 위해 어떤 경우에도 200을 반환한다.
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(content_length))
             if "callback_query" in body:
-                _handle_check_callback(body["callback_query"])
+                cq = body["callback_query"]
+                data = cq.get("data", "")
+                if data.startswith("t:"):
+                    parts = data.split(":")
+                    if len(parts) == 3:
+                        try:
+                            idx = int(parts[2])
+                            _handle_toggle(cq, parts[1], idx)
+                        except ValueError:
+                            pass
+                elif data.startswith("done:"):
+                    parts = data.split(":")
+                    if len(parts) == 2:
+                        _handle_done(cq, parts[1])
+                elif data.startswith("check:"):
+                    _handle_legacy_check(cq)
             elif "message" in body and body["message"].get("text"):
                 _handle_text_message(body["message"])
         except Exception as e:
