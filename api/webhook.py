@@ -15,6 +15,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import anthropic
@@ -37,16 +38,32 @@ FEEDBACK_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는
 - 이모지·헤더 사용 금지, 일반 문장으로만"""
 
 
+def _env(key: str) -> str | None:
+    """환경변수를 읽고 양 끝 공백·줄바꿈을 제거한다."""
+    val = os.environ.get(key)
+    return val.strip() if val else val
+
+
 def _telegram_api(method: str, data: dict) -> dict:
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    token = _env("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN 미설정")
     url = f"https://api.telegram.org/bot{token}/{method}"
     req = Request(
         url,
         data=json.dumps(data).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except HTTPError as e:
+        # HTTP 응답 에러는 status/reason 노출 (텔레그램 응답 body에는 토큰이 안 들어감)
+        # 토큰 잘못 → 401 Unauthorized, 페이로드 형식 잘못 → 400 Bad Request 식으로 즉시 파악 가능
+        raise RuntimeError(f"telegram api {method} HTTP {e.code} {e.reason}") from None
+    except Exception as e:
+        # client-side 에러(URLError 등)는 메시지에 URL/토큰이 들어갈 수 있어 type 이름만 노출
+        raise RuntimeError(f"telegram api {method} failed: {type(e).__name__}") from None
 
 
 def _send_message(chat_id: int, text: str):
@@ -57,8 +74,8 @@ def _send_message(chat_id: int, text: str):
 
 
 def _notion_client_and_db():
-    token = os.environ.get("NOTION_TOKEN")
-    db_id = os.environ.get("NOTION_DIARY_DB_ID")
+    token = _env("NOTION_TOKEN")
+    db_id = _env("NOTION_DIARY_DB_ID")
     if not token or not db_id:
         return None, None
     return Client(auth=token), db_id
@@ -124,7 +141,7 @@ def _save_feedback(client: Client, page_id: str, feedback: str):
 # --- Claude feedback ---
 
 def _generate_feedback(completed: list[str], uncompleted: list[str]) -> str:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _env("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY 미설정")
     client = anthropic.Anthropic(api_key=api_key)
@@ -260,8 +277,8 @@ def _handle_text_message(message: dict):
     if message.get("from", {}).get("is_bot"):
         return
     chat_id = message["chat"]["id"]
-    expected = os.environ.get("TELEGRAM_CHAT_ID")
-    if expected and str(chat_id) != str(expected):
+    expected = _env("TELEGRAM_CHAT_ID")
+    if expected and str(chat_id) != expected:
         return
 
     text = message.get("text", "")
