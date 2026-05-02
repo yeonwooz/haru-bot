@@ -16,15 +16,26 @@ def _get_client_and_db() -> tuple[Client, str] | tuple[None, None]:
 
 
 def ensure_setting_column():
-    """Notion diary DB에 setting 컬럼이 없으면 추가한다."""
+    """Notion diary DB의 첫 번째 data source에 setting 컬럼이 없으면 추가한다.
+
+    Notion API 2025-09-03부터 데이터베이스가 data_sources 컨테이너로 변경되어
+    properties는 data_source 안에 있다.
+    """
     client, db_id = _get_client_and_db()
     if not client:
         return
     try:
         db = client.databases.retrieve(database_id=db_id)
-        if "setting" not in db["properties"]:
-            client.databases.update(
-                database_id=db_id,
+        sources = db.get("data_sources") or []
+        if not sources:
+            print("[Diary] data_sources가 비어 있음 - setting 컬럼 추가 건너뜀")
+            return
+
+        ds_id = sources[0]["id"]
+        ds = client.data_sources.retrieve(data_source_id=ds_id)
+        if "setting" not in ds.get("properties", {}):
+            client.data_sources.update(
+                data_source_id=ds_id,
                 properties={"setting": {"rich_text": {}}},
             )
             print("[Diary] setting 컬럼 추가 완료")
