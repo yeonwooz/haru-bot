@@ -495,15 +495,8 @@ def _handle_status(callback_query: dict, pid_short: str, index: int):
     except Exception as e:
         print(f"[webhook] status 메시지 갱신 실패: {e}")
 
-    # discussion 누적 + 후속 reply
-    try:
-        _append_discussion(client, pid_short, "나", name)
-        discussion = _read_discussion(client, pid_short)
-        reply = _generate_reply(discussion)
-        _send_message(chat_id, reply)
-        _append_discussion(client, pid_short, "클로드", reply)
-    except Exception as e:
-        print(f"[webhook] status reply 처리 실패: {e}")
+    # 기분 응답은 Status select 컬럼에만 저장하고 discussion/reply는 생략한다.
+    # 단답("좋아!", "별로" 등)에 일일이 반응하면 어색하고 흐름이 무거워짐.
 
 
 def _handle_legacy_check(callback_query: dict):
