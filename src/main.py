@@ -33,7 +33,7 @@ from src.diary_store import (
     load_settings,
     ensure_tasks_column,
     ensure_discussion_column,
-    migrate_legacy_to_discussion,
+    bulletize_discussion,
 )
 
 
@@ -85,10 +85,11 @@ def run():
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
-    # 0. Notion DB 컬럼 확보 + 기존 comment/feedback → discussion 멱등 마이그레이션
+    # 0. Notion DB 컬럼 확보 (setting 컬럼은 별도 설정 페이지로 이전됨)
     ensure_tasks_column()
     ensure_discussion_column()
-    migrate_legacy_to_discussion()
+    # TODO: 한 번 돌린 후 이 호출과 diary_store.bulletize_discussion 함수 제거
+    bulletize_discussion()
 
     # 1. 데이터 수집
     print("--- 1단계: 데이터 수집 ---")

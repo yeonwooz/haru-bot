@@ -54,6 +54,23 @@ FEEDBACK_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는
 - 완료한 게 0개여도 격려 톤 유지 (오늘 하루 자체는 의미 있다는 뉘앙스)
 - 이모지·헤더 사용 금지, 일반 문장으로만"""
 
+# 같은 컨테이너 안에서 Telegram이 재시도한 같은 update_id를 차단하기 위한 in-memory FIFO.
+# Vercel 콜드 스타트로 다른 컨테이너에 retry가 가면 막을 수 없으나, 응답을 즉시 200으로
+# 돌려주는 것과 함께 쓰면 retry 자체가 거의 발생하지 않는다.
+_PROCESSED_UPDATE_IDS: list[int] = []
+_DEDUPE_LIMIT = 200
+
+
+def _is_duplicate_update(update_id: int) -> bool:
+    if update_id in _PROCESSED_UPDATE_IDS:
+        return True
+    _PROCESSED_UPDATE_IDS.append(update_id)
+    overflow = len(_PROCESSED_UPDATE_IDS) - _DEDUPE_LIMIT
+    if overflow > 0:
+        del _PROCESSED_UPDATE_IDS[:overflow]
+    return False
+
+
 REPLY_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는 따뜻한 일기 도우미입니다.
 지금까지의 대화 흐름을 보고 사용자의 마지막 메시지에 짧게(2~3줄) 반응합니다.
 
@@ -180,7 +197,7 @@ def _read_discussion(client: Client, page_id: str) -> str:
 def _append_discussion(client: Client, page_id: str, role: str, text: str):
     """discussion 컬럼에 '{role}: {text}' 한 줄을 append한다 (2000자 컷)."""
     existing = _read_discussion(client, page_id)
-    line = f"{role}: {text}"
+    line = f"• {role}: {text}"
     new_text = f"{existing}\n{line}" if existing else line
     client.pages.update(
         page_id=page_id,
@@ -322,9 +339,9 @@ def _generate_reply(discussion_text: str) -> str:
         raise RuntimeError("ANTHROPIC_API_KEY 미설정")
     client = anthropic.Anthropic(api_key=api_key)
     user_prompt = (
-        "지금까지의 대화 (각 줄은 '클로드: ...' 또는 '나: ...'):\n"
+        "지금까지의 대화 (각 줄은 '• 클로드: ...' 또는 '• 나: ...'):\n"
         f"{discussion_text}\n\n"
-        "마지막 '나:' 메시지에 짧게(2~3줄) 따뜻하게 반응해줘. 답에는 '클로드:' 같은 prefix 붙이지 말고 본문만 적어."
+        "마지막 '• 나:' 메시지에 짧게(2~3줄) 반응해줘. 답에는 '클로드:' 같은 prefix나 '•' 같은 bullet 기호 붙이지 말고 본문만 적어."
     )
     msg = client.messages.create(
         model=CLAUDE_MODEL,
@@ -658,9 +675,36 @@ def _handle_video_message(message: dict):
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        # 1) Telegram이 timeout으로 재시도하지 않도록 200을 먼저 돌려준다.
+        #    body 처리는 그 뒤에 진행. Vercel Python 런타임이 응답을 client에
+        #    먼저 흘려보낸 뒤 함수가 끝날 때까지 컨테이너를 살려두기를 기대.
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(content_length)
         try:
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(content_length))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        try:
+            body = json.loads(raw)
+        except Exception as e:
+            print(f"[webhook] body 파싱 실패: {e}")
+            return
+
+        # 2) 같은 update_id 중복 처리 차단
+        update_id = body.get("update_id")
+        if isinstance(update_id, int) and _is_duplicate_update(update_id):
+            print(f"[webhook] 중복 update_id={update_id} 무시")
+            return
+
+        try:
             if "callback_query" in body:
                 cq = body["callback_query"]
                 data = cq.get("data", "")
@@ -700,14 +744,6 @@ class handler(BaseHTTPRequestHandler):
                     _handle_text_message(msg)
         except Exception as e:
             print(f"[webhook] 처리 오류: {e}")
-
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"ok": True}).encode())
-        except Exception:
-            pass
 
     def log_message(self, format, *args):
         pass
