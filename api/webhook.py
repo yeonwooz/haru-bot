@@ -38,8 +38,8 @@ REPLY_MAX_TOKENS = 300
 NOTION_VERSION = "2025-09-03"
 NOTION_API = "https://api.notion.com/v1"
 
-# 사용자 설정(/설정 명령) 누적용 노션 페이지 (노션 환경 specific)
-NOTION_SETTINGS_PAGE_ID = "30fbb67c-a90c-8024-9ca3-ee6af0d9f223"
+# 사용자 설정(/설정 명령) 누적용 노션 페이지 — diary_store.NOTION_SETTINGS_PAGE_ID와 동일해야 함
+NOTION_SETTINGS_PAGE_ID = "357bb67c-a90c-8166-bccd-d83857fa0e19"
 
 # 노션 Status 컬럼(select 타입)의 옵션. 인덱스가 콜백 데이터에 사용되므로 순서 변경 주의.
 STATUS_OPTIONS = ["좋아!", "별로", "낫 배드?"]

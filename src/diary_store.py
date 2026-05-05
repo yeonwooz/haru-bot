@@ -15,8 +15,9 @@ import os
 
 from notion_client import Client
 
-# 사용자가 /설정 X로 누적하는 봇 설정 페이지 ID (노션 환경 specific)
-NOTION_SETTINGS_PAGE_ID = "30fbb67c-a90c-8024-9ca3-ee6af0d9f223"
+# 사용자가 /설정 X로 누적하는 봇 설정 전용 sub-page (노션 환경 specific)
+# 부모: "📒 일기쓰기 - 나의 하루🍀" 페이지의 "⚙️ 설정" sub-page
+NOTION_SETTINGS_PAGE_ID = "357bb67c-a90c-8166-bccd-d83857fa0e19"
 
 
 def _get_client_and_db() -> tuple[Client, str] | tuple[None, None]:
@@ -276,27 +277,6 @@ def bulletize_discussion() -> int:
     if converted:
         print(f"[Diary] 총 {converted}개 페이지 bullet 변환 완료")
     return converted
-
-
-def append_setting(page_id: str, setting: str) -> bool:
-    client, _ = _get_client_and_db()
-    if not client:
-        return False
-    try:
-        page = client.pages.retrieve(page_id=page_id)
-        rich = page["properties"].get("setting", {}).get("rich_text", [])
-        existing = rich[0].get("text", {}).get("content", "") if rich else ""
-        new_text = f"{existing}\n{setting}" if existing else setting
-        client.pages.update(
-            page_id=page_id,
-            properties={
-                "setting": {"rich_text": [{"text": {"content": new_text[:2000]}}]},
-            },
-        )
-        return True
-    except Exception as e:
-        print(f"[Diary] setting append 실패: {e}")
-        return False
 
 
 def load_settings() -> list[str]:
