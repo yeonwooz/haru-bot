@@ -25,7 +25,13 @@ USAGE_LOG_PATH = os.path.join(PROJECT_ROOT, "usage_log.csv")
 from dotenv import load_dotenv
 
 import config
-from src.collectors import collect_calendar, collect_notion, collect_section_todos, collect_github
+from src.collectors import (
+    collect_calendar,
+    collect_notion,
+    collect_section_todos,
+    collect_today_daily_todo_page,
+    collect_github,
+)
 from src.summarizer import generate_summary
 from src.telegram_bot import send_summary, send_task_keyboard
 from src.diary_store import (
@@ -65,6 +71,16 @@ def _log_usage(run_date: str, duration_sec: float, usage: dict, model: str, note
     print(f"[Usage] {model}: 입력 {usage['input_tokens']}토큰, 출력 {usage['output_tokens']}토큰, 비용 ${cost:.4f}")
 
 
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
 def _collect_uncompleted_tasks(calendar_data: list[dict], notion_data: list[dict]) -> list[str]:
     """버튼으로 토글할 미완료 태스크 raw 목록 (캘린더 + 노션 할일 중 done=false)."""
     tasks: list[str] = []
@@ -81,7 +97,8 @@ def run():
     """전체 파이프라인을 실행한다."""
     load_dotenv()
     start_time = time.time()
-    today = datetime.now(KST).strftime("%Y-%m-%d")
+    now = datetime.now(KST)
+    today = now.strftime("%Y-%m-%d")
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
@@ -99,16 +116,20 @@ def run():
     section_uncompleted, section_completed = collect_section_todos(
         config.NOTION_TODO_PAGE_QUERY, config.NOTION_TODO_SECTION, config.CLAUDE_MODEL
     )
+    daily_uncompleted, daily_completed = collect_today_daily_todo_page(now)
+
+    todo_uncompleted = _dedupe(section_uncompleted + daily_uncompleted)
+    todo_completed = _dedupe(section_completed + daily_completed)
 
     total = len(calendar_data) + len(notion_data) + len(github_data)
     print(
         f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, "
-        f"GitHub: {len(github_data)}), 섹션 미완료: {len(section_uncompleted)}, 섹션 오늘완료: {len(section_completed)}\n"
+        f"GitHub: {len(github_data)}), 미완료 {len(todo_uncompleted)}, 오늘완료 {len(todo_completed)}\n"
     )
 
     # 2. 요약 생성 (캘린더 일정이 있거나 오늘 완료한 태스크가 있으면 Claude 호출)
     print("--- 2단계: 오늘 하루 정리 ---")
-    if calendar_data or section_completed:
+    if calendar_data or todo_completed:
         saved_settings = load_settings()
         summary, usage = generate_summary(
             calendar_data=calendar_data,
@@ -117,7 +138,7 @@ def run():
             max_tokens=config.MAX_TOKENS,
             github_data=github_data,
             user_settings=saved_settings if saved_settings else None,
-            completed_today=section_completed,
+            completed_today=todo_completed,
         )
         print(f"\n{summary}\n")
     else:
@@ -125,10 +146,12 @@ def run():
         usage = {"input_tokens": 0, "output_tokens": 0}
         print("[Summarizer] 캘린더 일정 0개 + 오늘 완료 태스크 0개 - Claude 호출 생략")
 
-    uncompleted_tasks = _collect_uncompleted_tasks(calendar_data, notion_data) + section_uncompleted
+    uncompleted_tasks = _dedupe(
+        _collect_uncompleted_tasks(calendar_data, notion_data) + todo_uncompleted
+    )
 
     # tasks 컬럼에 미완료([ ])와 오늘 완료([x])를 함께 저장
-    tasks_for_diary = [(t, False) for t in uncompleted_tasks] + [(t, True) for t in section_completed]
+    tasks_for_diary = [(t, False) for t in uncompleted_tasks] + [(t, True) for t in todo_completed]
 
     # 3. 일기 저장 (page_id 확보)
     print("--- 3단계: 일기 저장 ---")

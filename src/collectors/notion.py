@@ -119,6 +119,45 @@ def _extract_tags(page: dict) -> list[str]:
     return tags
 
 
+def collect_today_daily_todo_page(today: datetime) -> tuple[list[str], list[str]]:
+    """`YYYY-MM-DD TODO` 페이지(notion-daily-todo가 매일 만드는 페이지)에서 to-do 수집.
+
+    페이지 안 모든 to_do 블록을 카테고리(heading_2) 무시하고:
+    - unchecked → 미완료
+    - checked  → 오늘 완료 (페이지 자체가 오늘 생성된 것이므로 체크는 모두 오늘로 간주)
+    """
+    token = os.environ.get("NOTION_TOKEN")
+    if not token:
+        return [], []
+    client = Client(auth=token)
+
+    title_query = today.strftime("%Y-%m-%d") + " TODO"
+    page_id = _find_page_by_title(client, title_query)
+    if not page_id:
+        print(f"[Notion-Daily] '{title_query}' 페이지를 찾지 못함")
+        return [], []
+
+    blocks = _list_all_children(client, page_id)
+    uncompleted: list[str] = []
+    completed: list[str] = []
+    for b in blocks:
+        if b.get("type") != "to_do":
+            continue
+        text = "".join(rt.get("plain_text", "") for rt in b["to_do"].get("rich_text", [])).strip()
+        if not text:
+            continue
+        if b["to_do"].get("checked", False):
+            completed.append(text)
+        else:
+            uncompleted.append(text)
+
+    print(
+        f"[Notion-Daily] '{title_query}' 미완료 {len(uncompleted)}개, "
+        f"오늘 완료 {len(completed)}개"
+    )
+    return uncompleted, completed
+
+
 def collect_section_todos(
     page_query: str, section_title: str, model: str
 ) -> tuple[list[str], list[str]]:
