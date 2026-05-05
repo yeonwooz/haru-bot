@@ -5,8 +5,8 @@
   - summary (title): 일정/완료한 태스크 요약 텍스트
   - date (date)
   - tasks (rich_text): "[ ] 항목" / "[x] 항목" 줄들
-  - comment (rich_text): 사용자 답장 누적
-  - feedback (rich_text): 봇이 완료 후 보낸 의견
+  - discussion (rich_text): "클로드: ..." / "나: ..." 줄로 누적되는 대화 로그
+  - Status (select): "좋아!"/"별로"/"낫 배드?" 등 그날 기분
 - 사용자 설정(/설정 명령으로 누적)은 일기 페이지가 아닌 별도 "설정 페이지"
   본문 블록으로 누적 (NOTION_SETTINGS_PAGE_ID).
 """
@@ -62,8 +62,8 @@ def ensure_tasks_column():
     _ensure_column("tasks")
 
 
-def ensure_feedback_column():
-    _ensure_column("feedback")
+def ensure_discussion_column():
+    _ensure_column("discussion")
 
 
 def _find_page(client: Client, db_id: str, date: str) -> dict | None:
@@ -193,43 +193,95 @@ def toggle_task(page_id: str, index: int) -> tuple[bool, list[tuple[str, bool]]]
         return None
 
 
-def save_feedback(page_id: str, feedback: str) -> bool:
-    client, _ = _get_client_and_db()
-    if not client:
-        return False
-    try:
-        client.pages.update(
-            page_id=page_id,
-            properties={
-                "feedback": {"rich_text": [{"text": {"content": feedback[:2000]}}]},
-            },
-        )
-        print(f"[Diary] feedback 저장 완료")
-        return True
-    except Exception as e:
-        print(f"[Diary] feedback 저장 실패: {e}")
-        return False
-
-
-def append_comment(page_id: str, comment: str) -> bool:
+def append_discussion(page_id: str, role: str, text: str) -> bool:
+    """discussion 컬럼에 '{role}: {text}' 한 줄을 append한다 (2000자 컷)."""
     client, _ = _get_client_and_db()
     if not client:
         return False
     try:
         page = client.pages.retrieve(page_id=page_id)
-        rich = page["properties"].get("comment", {}).get("rich_text", [])
+        rich = page["properties"].get("discussion", {}).get("rich_text", [])
         existing = rich[0].get("text", {}).get("content", "") if rich else ""
-        new_text = f"{existing}\n{comment}" if existing else comment
+        line = f"{role}: {text}"
+        new_text = f"{existing}\n{line}" if existing else line
         client.pages.update(
             page_id=page_id,
             properties={
-                "comment": {"rich_text": [{"text": {"content": new_text[:2000]}}]},
+                "discussion": {"rich_text": [{"text": {"content": new_text[:2000]}}]},
             },
         )
         return True
     except Exception as e:
-        print(f"[Diary] comment append 실패: {e}")
+        print(f"[Diary] discussion append 실패: {e}")
         return False
+
+
+def migrate_legacy_to_discussion() -> int:
+    """기존 comment, feedback 컬럼 내용을 discussion 한 컬럼으로 합친다.
+
+    discussion이 비어 있는 페이지에 한해 'feedback → comment 줄들' 순으로
+    "클로드: ..." / "나: ..." 형식으로 평탄화. 이미 discussion이 있으면 건드리지 않으므로
+    멱등하게 매번 호출해도 안전하다.
+    """
+    client, db_id = _get_client_and_db()
+    if not client:
+        return 0
+
+    db_id_clean = db_id.replace("-", "")
+    try:
+        results = client.search(filter={"property": "object", "value": "page"})
+    except Exception as e:
+        print(f"[Diary] 마이그레이션 검색 실패: {e}")
+        return 0
+
+    migrated = 0
+    for page in results.get("results", []):
+        parent = page.get("parent", {})
+        if parent.get("database_id", "").replace("-", "") != db_id_clean:
+            continue
+        props = page.get("properties", {})
+
+        disc_rich = props.get("discussion", {}).get("rich_text", [])
+        if disc_rich and disc_rich[0].get("text", {}).get("content"):
+            continue
+
+        feedback_rich = props.get("feedback", {}).get("rich_text", [])
+        feedback_text = feedback_rich[0].get("text", {}).get("content", "") if feedback_rich else ""
+
+        comment_rich = props.get("comment", {}).get("rich_text", [])
+        comment_text = comment_rich[0].get("text", {}).get("content", "") if comment_rich else ""
+
+        if not feedback_text and not comment_text:
+            continue
+
+        lines: list[str] = []
+        if feedback_text.strip():
+            lines.append(f"클로드: {feedback_text.strip()}")
+        if comment_text.strip():
+            for ln in comment_text.split("\n"):
+                ln = ln.strip()
+                if ln:
+                    lines.append(f"나: {ln}")
+        if not lines:
+            continue
+
+        new_text = "\n".join(lines)
+        try:
+            client.pages.update(
+                page_id=page["id"],
+                properties={
+                    "discussion": {"rich_text": [{"text": {"content": new_text[:2000]}}]},
+                },
+            )
+            migrated += 1
+            date_str = props.get("date", {}).get("date", {}).get("start", "?")
+            print(f"[Diary] {date_str} discussion 마이그레이션 완료")
+        except Exception as e:
+            print(f"[Diary] 페이지 마이그레이션 실패: {e}")
+
+    if migrated:
+        print(f"[Diary] 총 {migrated}개 페이지 마이그레이션 완료")
+    return migrated
 
 
 def append_setting(page_id: str, setting: str) -> bool:

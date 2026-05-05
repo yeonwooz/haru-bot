@@ -32,7 +32,8 @@ from src.diary_store import (
     save_diary,
     load_settings,
     ensure_tasks_column,
-    ensure_feedback_column,
+    ensure_discussion_column,
+    migrate_legacy_to_discussion,
 )
 
 
@@ -84,9 +85,10 @@ def run():
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
-    # 0. Notion DB 컬럼 확보 (setting 컬럼은 별도 설정 페이지로 이전됨)
+    # 0. Notion DB 컬럼 확보 + 기존 comment/feedback → discussion 멱등 마이그레이션
     ensure_tasks_column()
-    ensure_feedback_column()
+    ensure_discussion_column()
+    migrate_legacy_to_discussion()
 
     # 1. 데이터 수집
     print("--- 1단계: 데이터 수집 ---")
