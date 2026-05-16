@@ -34,6 +34,13 @@ SETTING_BARE = ("/설정", "/set")
 CLAUDE_MODEL = "claude-opus-4-6"
 FEEDBACK_MAX_TOKENS = 400
 REPLY_MAX_TOKENS = 300
+DATE_PARSE_MAX_TOKENS = 80
+
+# 오늘 일기가 없을 때 사용자에게 "어느 날짜에 추가할지" 물어보는 prompt에 박는 마커.
+# 사용자가 force_reply로 답장하면 reply_to_message.text를 검사해 우리가 보낸 prompt인지 식별하고,
+# MSG_DELIMITER 뒤쪽을 원본 사용자 메시지로 복원한다 — pending state를 외부 저장소 없이 유지.
+PENDING_DATE_MARKER = "[haru-bot:pending-date]"
+MSG_DELIMITER = "\n──[메시지]──\n"
 
 NOTION_VERSION = "2025-09-03"
 NOTION_API = "https://api.notion.com/v1"
@@ -332,6 +339,44 @@ def _generate_feedback(completed: list[str], uncompleted: list[str]) -> str:
     return msg.content[0].text
 
 
+def _parse_date_answer(text: str, today: str) -> str | None:
+    """사용자가 답한 짧은 한국어 텍스트를 YYYY-MM-DD로 변환. 해석 불가 시 None."""
+    api_key = _env("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    client = anthropic.Anthropic(api_key=api_key)
+    system = (
+        f"오늘 날짜는 {today} (YYYY-MM-DD).\n"
+        "사용자의 짧은 한국어 텍스트를 날짜로 변환해 JSON 한 줄로만 답하라.\n"
+        '형식: {"date": "YYYY-MM-DD"} 또는 {"date": null}\n'
+        "예: '어제' → 오늘 -1일, '그제'/'엊그제'/'그저께' → 오늘 -2일, "
+        "'N일 전' → 오늘 -N일, 'M월 D일' → 가장 가까운 과거 날짜.\n"
+        "날짜로 해석 못 하면 null."
+    )
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=DATE_PARSE_MAX_TOKENS,
+            system=[{"type": "text", "text": system}],
+            messages=[{"role": "user", "content": text}],
+        )
+        raw = msg.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        data = json.loads(raw)
+        date = data.get("date")
+        if not isinstance(date, str):
+            return None
+        datetime.strptime(date, "%Y-%m-%d")
+        return date
+    except Exception as e:
+        print(f"[webhook] 날짜 파싱 실패: {e}")
+        return None
+
+
 def _generate_reply(discussion_text: str) -> str:
     """discussion 누적 텍스트를 보고 마지막 '나:' 메시지에 짧게 반응한다."""
     api_key = _env("ANTHROPIC_API_KEY")
@@ -521,6 +566,78 @@ def _classify_text(text: str) -> tuple[str, str | None]:
     return ("comment", text)
 
 
+def _send_pending_date_prompt(chat_id: int, today: str, user_text: str):
+    """오늘 일기가 없을 때 어느 날짜에 추가할지 묻는 force_reply prompt. 사용자 메시지를
+    prompt 본문에 박아 두면 답장 update의 reply_to_message로 그대로 복원 가능 — 외부 저장소 불필요."""
+    prompt = (
+        f"{PENDING_DATE_MARKER}\n"
+        f"오늘({today}) 일기가 아직 없네. 어느 날짜 일기에 추가할까?\n"
+        '예) "어제", "그제", "2026-05-14"\n\n'
+        "답장으로 날짜만 알려줘. 메시지는 그대로 보관할게."
+        f"{MSG_DELIMITER}{user_text}"
+    )
+    try:
+        _telegram_api("sendMessage", {
+            "chat_id": chat_id,
+            "text": prompt,
+            "reply_markup": {"force_reply": True},
+        })
+    except Exception as e:
+        print(f"[webhook] pending-date prompt 전송 실패: {e}")
+
+
+def _extract_pending_text(reply_to: dict | None) -> str | None:
+    """reply_to_message가 우리 pending-date prompt인지 확인하고 원본 사용자 메시지를 반환.
+    아니면 None — 우리 prompt가 아니거나 형식이 깨진 경우."""
+    if not reply_to:
+        return None
+    if not reply_to.get("from", {}).get("is_bot"):
+        return None
+    text = reply_to.get("text", "")
+    if not text.startswith(PENDING_DATE_MARKER):
+        return None
+    if MSG_DELIMITER not in text:
+        return None
+    return text.split(MSG_DELIMITER, 1)[1]
+
+
+def _handle_date_answer(message: dict, original_text: str):
+    """pending-date prompt에 대한 답장 처리: 날짜 파싱 → 해당 페이지에 메시지 누적."""
+    chat_id = message["chat"]["id"]
+    expected = _env("TELEGRAM_CHAT_ID")
+    if expected and str(chat_id) != expected:
+        return
+
+    date_input = (message.get("text") or "").strip()
+    if not date_input:
+        return
+
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    target_date = _parse_date_answer(date_input, today)
+    if not target_date:
+        _send_message(chat_id, '날짜를 못 알아들었어. 다시 알려줄래? (예: "어제", "2026-05-14")')
+        return
+
+    client, db_id = _notion_client_and_db()
+    if not client:
+        _send_message(chat_id, "Notion 설정이 누락돼서 처리하지 못했어.")
+        return
+
+    try:
+        page_id = _find_today_page_id(client, db_id, target_date)
+    except Exception as e:
+        print(f"[webhook] {target_date} 페이지 조회 실패: {e}")
+        _send_message(chat_id, "일기 페이지 찾는 중 문제가 생겼어.")
+        return
+
+    if not page_id:
+        _send_message(chat_id, f"{target_date} 일기가 없어. 기존 일기가 있는 날짜로 다시 답장해줘.")
+        return
+
+    _send_message(chat_id, f"{target_date} 일기에 추가할게.")
+    _process_user_input(client, page_id, chat_id, original_text)
+
+
 def _process_user_input(client: Client, page_id: str, chat_id: int, text: str):
     """discussion에 '나:' append → reply 생성 → '클로드:' append + 전송."""
     try:
@@ -577,6 +694,12 @@ def _handle_text_message(message: dict):
     if expected and str(chat_id) != expected:
         return
 
+    # pending-date prompt에 대한 force_reply 답장이면 별도 흐름으로 라우팅
+    pending_text = _extract_pending_text(message.get("reply_to_message"))
+    if pending_text is not None:
+        _handle_date_answer(message, pending_text)
+        return
+
     text = message.get("text", "")
     if not text:
         return
@@ -604,7 +727,7 @@ def _handle_text_message(message: dict):
     try:
         page_id = _find_today_page_id(client, db_id, today)
         if not page_id:
-            _send_message(chat_id, f"{today} 일기를 아직 찾지 못했어요. 봇이 오늘 요약을 보낸 뒤에 답장해 주세요.")
+            _send_pending_date_prompt(chat_id, today, payload)
             return
         _process_user_input(client, page_id, chat_id, payload)
     except Exception as e:
