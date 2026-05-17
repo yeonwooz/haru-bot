@@ -10,8 +10,8 @@ SUMMARY_COUNT = 3
 # Claude 모델
 CLAUDE_MODEL = "claude-opus-4-6"
 
-# 요약 생성 최대 토큰
-MAX_TOKENS = 1000
+# 요약 생성 최대 토큰 (실제 과금은 사용량 기준; 잘림 방지용 상한)
+MAX_TOKENS = 16000
 
 # Telegram 답장 대기 시간 (초) — GitHub Actions 제한 고려
 TELEGRAM_REPLY_TIMEOUT = 300  # 5분

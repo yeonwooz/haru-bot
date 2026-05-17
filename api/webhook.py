@@ -32,9 +32,9 @@ SETTING_PREFIXES = ("/설정 ", "/set ")
 SETTING_BARE = ("/설정", "/set")
 
 CLAUDE_MODEL = "claude-opus-4-6"
-FEEDBACK_MAX_TOKENS = 400
-REPLY_MAX_TOKENS = 300
-DATE_PARSE_MAX_TOKENS = 80
+FEEDBACK_MAX_TOKENS = 16000
+REPLY_MAX_TOKENS = 16000
+DATE_PARSE_MAX_TOKENS = 16000
 
 # 오늘 일기가 없을 때 사용자에게 "어느 날짜에 추가할지" 물어보는 prompt에 박는 마커.
 # 사용자가 force_reply로 답장하면 reply_to_message.text를 검사해 우리가 보낸 prompt인지 식별하고,

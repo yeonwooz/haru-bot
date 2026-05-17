@@ -270,7 +270,7 @@ def _claude_pick_active_headings(headings: list[str], today: datetime, model: st
         client = anthropic.Anthropic(api_key=api_key.strip())
         msg = client.messages.create(
             model=model,
-            max_tokens=400,
+            max_tokens=16000,
             messages=[{"role": "user", "content": user_prompt}],
         )
         response = msg.content[0].text.strip()
