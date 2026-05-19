@@ -1,7 +1,6 @@
 from src.collectors.calendar import collect_calendar
 from src.collectors.notion import (
     collect_notion,
-    collect_section_todos,
     collect_today_daily_todo_page,
 )
 from src.collectors.github import collect_github
@@ -9,7 +8,6 @@ from src.collectors.github import collect_github
 __all__ = [
     "collect_calendar",
     "collect_notion",
-    "collect_section_todos",
     "collect_today_daily_todo_page",
     "collect_github",
 ]

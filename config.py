@@ -16,10 +16,6 @@ MAX_TOKENS = 16000
 # Telegram 답장 대기 시간 (초) — GitHub Actions 제한 고려
 TELEGRAM_REPLY_TIMEOUT = 300  # 5분
 
-# 노션 "할 일" 페이지 — 매일 미완료 to-do를 태스크 키보드에 추가하는 소스
-NOTION_TODO_PAGE_QUERY = "2026 할일"
-NOTION_TODO_SECTION = "할 일"
-
 # 모델별 가격 (USD per 1M tokens)
 MODEL_PRICING = {
     "claude-opus-4-6": {"input": 15.0, "output": 75.0},

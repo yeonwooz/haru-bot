@@ -28,7 +28,6 @@ import config
 from src.collectors import (
     collect_calendar,
     collect_notion,
-    collect_section_todos,
     collect_today_daily_todo_page,
     collect_github,
 )
@@ -113,13 +112,7 @@ def run():
     calendar_data = collect_calendar(config.PERIOD_DAYS)
     notion_data = collect_notion(config.PERIOD_DAYS)
     github_data = collect_github(config.PERIOD_DAYS)
-    section_uncompleted, section_completed = collect_section_todos(
-        config.NOTION_TODO_PAGE_QUERY, config.NOTION_TODO_SECTION, config.CLAUDE_MODEL
-    )
-    daily_uncompleted, daily_completed = collect_today_daily_todo_page(now)
-
-    todo_uncompleted = _dedupe(section_uncompleted + daily_uncompleted)
-    todo_completed = _dedupe(section_completed + daily_completed)
+    todo_uncompleted, todo_completed = collect_today_daily_todo_page(now)
 
     total = len(calendar_data) + len(notion_data) + len(github_data)
     print(
