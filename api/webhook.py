@@ -52,12 +52,12 @@ NOTION_SETTINGS_PAGE_ID = "357bb67c-a90c-8166-bccd-d83857fa0e19"
 STATUS_OPTIONS = ["좋아!", "별로", "낫 배드?"]
 
 FEEDBACK_SYSTEM_PROMPT = """당신은 사용자의 하루를 함께 돌아보는 긍정적이고 합리적인 일기 도우미입니다.
-사용자가 오늘 완료한 태스크와 못한 태스크를 보고, 3~5줄로 짧게 의견을 줍니다.
+사용자가 오늘 완료한 태스크를 보고, 3~5줄로 짧게 의견을 줍니다.
 
 규칙:
 - 친근하고 자연스러운 반말 톤
-- 완료한 것이 있으면 구체적으로 짚어 칭찬
-- 못한 것은 원인을 가볍게 짚되 자책 톤은 피하기
+- 완료한 것을 구체적으로 짚어 칭찬
+- 못한 태스크는 언급하지 않기 (입력으로 주어지지 않음)
 - 완료한 게 0개여도 격려 톤 유지 (오늘 하루 자체는 의미 있다는 뉘앙스)
 - 이모지·헤더 사용 금지, 일반 문장으로만"""
 
@@ -227,6 +227,80 @@ def _get_page_url(client: Client, page_id: str) -> str | None:
         return None
 
 
+def _get_page_date(client: Client, page_id: str) -> str | None:
+    """일기 페이지의 date 컬럼(YYYY-MM-DD)을 반환. 없으면 None."""
+    try:
+        page = client.pages.retrieve(page_id=page_id)
+        return page["properties"].get("date", {}).get("date", {}).get("start")
+    except Exception as e:
+        print(f"[webhook] date 조회 실패: {e}")
+        return None
+
+
+def _find_daily_todo_page_id(client: Client, date: str) -> str | None:
+    """'{date} TODO' 제목의 페이지(notion-daily-todo가 만든 페이지) ID. 없으면 None."""
+    title_query = f"{date} TODO"
+    try:
+        results = client.search(
+            query=title_query,
+            filter={"property": "object", "value": "page"},
+        )
+    except Exception as e:
+        print(f"[webhook] daily-todo 검색 실패: {e}")
+        return None
+    for r in results.get("results", []):
+        for prop in r.get("properties", {}).values():
+            if prop.get("type") != "title":
+                continue
+            title_parts = prop.get("title", [])
+            actual = "".join(t.get("plain_text", "") for t in title_parts).strip()
+            if actual == title_query:
+                return r["id"]
+    return None
+
+
+def _sync_todos_in_daily_page(client: Client, date: str, items: list[tuple[str, bool]]):
+    """'{date} TODO' 페이지의 to_do 블록들을 items의 checked 상태에 일괄 맞춘다.
+
+    🏁 완료 시점에 한 번 호출 — 각 토글마다 호출하면 API 비용이 늘고 응답이 느려지기 때문.
+    매칭 실패(이름 불일치 / 페이지 없음 / nested to_do)는 silent.
+    """
+    daily_page_id = _find_daily_todo_page_id(client, date)
+    if not daily_page_id:
+        return
+
+    desired: dict[str, bool] = {}
+    for text, checked in items:
+        desired[text.strip()] = checked
+
+    cursor = None
+    while True:
+        try:
+            resp = client.blocks.children.list(
+                block_id=daily_page_id, page_size=100, start_cursor=cursor,
+            )
+        except Exception as e:
+            print(f"[webhook] daily-todo blocks list 실패: {e}")
+            return
+        for b in resp.get("results", []):
+            if b.get("type") != "to_do":
+                continue
+            text = "".join(rt.get("plain_text", "") for rt in b["to_do"].get("rich_text", [])).strip()
+            if text not in desired:
+                continue
+            want = desired[text]
+            if b["to_do"].get("checked", False) == want:
+                continue
+            try:
+                client.blocks.update(block_id=b["id"], to_do={"checked": want})
+                print(f"[webhook] daily-todo '{text}' → checked={want}")
+            except Exception as e:
+                print(f"[webhook] to_do 블록 갱신 실패: {e}")
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+
+
 def _append_setting_to_settings_page(client: Client, setting_text: str):
     client.blocks.children.append(
         block_id=NOTION_SETTINGS_PAGE_ID,
@@ -318,16 +392,14 @@ def _append_image_block(client: Client, page_id: str, file_upload_id: str):
 
 # --- Claude ---
 
-def _generate_feedback(completed: list[str], uncompleted: list[str]) -> str:
+def _generate_feedback(completed: list[str]) -> str:
     api_key = _env("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY 미설정")
     client = anthropic.Anthropic(api_key=api_key)
     done_text = "\n".join(f"- {t}" for t in completed) if completed else "(없음)"
-    undone_text = "\n".join(f"- {t}" for t in uncompleted) if uncompleted else "(없음)"
     user_prompt = (
         f"오늘 완료한 태스크:\n{done_text}\n\n"
-        f"오늘 못한 태스크:\n{undone_text}\n\n"
         "위를 보고 3~5줄로 의견을 줘."
     )
     msg = client.messages.create(
@@ -474,9 +546,14 @@ def _handle_done(callback_query: dict, pid_short: str):
 
     try:
         items = _read_tasks(client, pid_short)
+
+        # 노션 'YYYY-MM-DD TODO' 페이지의 to_do 블록 체크 상태를 일기 페이지 상태와 동기화
+        date = _get_page_date(client, pid_short)
+        if date:
+            _sync_todos_in_daily_page(client, date, items)
+
         completed = [t for t, d in items if d]
-        uncompleted = [t for t, d in items if not d]
-        feedback = _generate_feedback(completed, uncompleted)
+        feedback = _generate_feedback(completed)
         _send_message(chat_id, feedback)
         try:
             _append_discussion(client, pid_short, "클로드", feedback)
