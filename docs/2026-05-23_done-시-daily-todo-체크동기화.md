@@ -41,3 +41,43 @@
 
 - `python -m py_compile api/webhook.py` 통과
 - 실제 동작은 다음 봇 실행(오후 8시 KST) + 텔레그램 🏁 완료 시 확인 예정
+
+---
+
+# 2026-05-23 (추가): 미완료 todo 의미 중복 제거
+
+## 배경
+
+`src/main.py`의 `_dedupe()`는 완전 동일 문자열만 제거해서, "회의 준비" / "회의
+준비하기", "스탠드업" / "팀 스탠드업" 같이 어미·포함 관계의 중복이 텔레그램
+체크리스트와 일기 페이지에 그대로 따로 나갔다.
+
+규칙 기반 정규화(어미 stripping 등)로는 한계가 명확해 [LLM 우선
+원칙](../../../.claude/projects/C--Users-sean123/memory/feedback_llm_over_keyword_rules.md)에
+따라 Claude에 위임.
+
+## 변경
+
+### `src/summarizer.py`
+
+- `dedupe_tasks(items, model) -> (deduped, usage)` 추가
+- 시스템 프롬프트 판단 기준 명시: 어미·조사·공백 차이는 같음 / 포함 관계도 같음
+  / 구체 대상 다르면 별개 / 의심스러우면 별개 (false-positive 병합 회피)
+- 응답은 JSON 배열만, 대표는 입력 문구 그대로 (재작성 금지)
+- 안전장치: 응답이 입력의 부분집합이 아니면 거부하고 원본 반환
+- API 실패·파싱 실패·검증 실패 모두 silent → 원본 반환
+
+### `src/main.py`
+
+- 기존 `_dedupe()` (완전 일치) 호출 직후 `dedupe_tasks` 호출
+- 일기 페이지·텔레그램 양쪽에 반영 (`uncompleted_tasks` 자체를 갱신)
+- dedupe usage를 summarizer usage에 누적 → `usage_log.csv`에 합산 기록
+
+## 비용·지연
+
+평소 미완료 ~5–10개, 입력 ~200 / 출력 ~100 토큰 → 약 $0.01·1초.
+
+## 검증
+
+- `python -m py_compile src/summarizer.py src/main.py` 통과
+- 실제 동작은 다음 봇 실행(오후 8시 KST) `[Dedupe]` 로그로 확인

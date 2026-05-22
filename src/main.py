@@ -31,7 +31,7 @@ from src.collectors import (
     collect_today_daily_todo_page,
     collect_github,
 )
-from src.summarizer import generate_summary
+from src.summarizer import generate_summary, dedupe_tasks
 from src.telegram_bot import send_summary, send_task_keyboard
 from src.diary_store import (
     save_diary,
@@ -142,6 +142,11 @@ def run():
     uncompleted_tasks = _dedupe(
         _collect_uncompleted_tasks(calendar_data, notion_data) + todo_uncompleted
     )
+
+    # 의미상 중복 ("회의 준비" vs "회의 준비하기") 제거 — 일기·텔레그램 양쪽에 반영
+    uncompleted_tasks, dedupe_usage = dedupe_tasks(uncompleted_tasks, config.CLAUDE_MODEL)
+    usage["input_tokens"] += dedupe_usage["input_tokens"]
+    usage["output_tokens"] += dedupe_usage["output_tokens"]
 
     # tasks 컬럼에 미완료([ ])와 오늘 완료([x])를 함께 저장
     tasks_for_diary = [(t, False) for t in uncompleted_tasks] + [(t, True) for t in todo_completed]

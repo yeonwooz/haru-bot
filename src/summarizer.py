@@ -1,6 +1,8 @@
 """Claude API를 사용하여 오늘 한 일 3가지를 요약하는 모듈"""
 
+import json
 import os
+import re
 
 import anthropic
 
@@ -79,6 +81,88 @@ def generate_summary(
         "output_tokens": message.usage.output_tokens,
     }
     print(f"[Summarizer] 요약 완료 ({len(result)}자, 입력 {usage['input_tokens']}토큰, 출력 {usage['output_tokens']}토큰)")
+    return result, usage
+
+
+DEDUPE_SYSTEM_PROMPT = """사용자의 오늘 미완료 todo 리스트에서 의미상 중복되는 항목을 찾아 그룹별로 대표 하나만 남긴다.
+
+판단 기준:
+- 어미·조사·공백 차이만 있는 항목은 같은 항목 ("회의 준비" = "회의 준비하기")
+- 한쪽이 다른 쪽을 명백히 포함하면 같은 항목 ("스탠드업" = "팀 스탠드업")
+- 구체 대상이 다르면 별개 ("PR 리뷰" ≠ "리뷰: feat/foo")
+- 의심스러우면 별개로 둠 (false-positive 병합이 누락보다 나쁨)
+
+대표는 입력 문구 중 하나를 그대로 선택한다. 재작성·요약하지 않는다.
+
+출력은 JSON 배열 하나만. 다른 텍스트·코드펜스·설명 금지.
+예) ["회의 준비", "PR 리뷰"]"""
+
+
+def dedupe_tasks(items: list[str], model: str) -> tuple[list[str], dict]:
+    """의미상 중복되는 todo 항목을 Claude로 판별해 그룹별 대표만 남긴다.
+
+    실패하거나 응답이 입력의 부분집합이 아니면 원본 그대로 반환한다 (silent).
+    Returns: (deduped_items, {"input_tokens": int, "output_tokens": int})
+    """
+    empty_usage = {"input_tokens": 0, "output_tokens": 0}
+    if len(items) < 2:
+        return items, empty_usage
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("[Dedupe] ANTHROPIC_API_KEY 미설정, 원본 반환")
+        return items, empty_usage
+
+    user_prompt = "입력 todo 리스트:\n" + "\n".join(f"- {t}" for t in items)
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model=model,
+            max_tokens=1000,
+            system=DEDUPE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text = message.content[0].text.strip()
+        usage = {
+            "input_tokens": message.usage.input_tokens,
+            "output_tokens": message.usage.output_tokens,
+        }
+    except Exception as e:
+        print(f"[Dedupe] Claude 호출 실패: {e}, 원본 반환")
+        return items, empty_usage
+
+    # 응답에서 JSON 배열만 추출 (혹시 텍스트가 섞여도)
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if not match:
+        print(f"[Dedupe] JSON 배열 못 찾음, 원본 반환: {text[:100]!r}")
+        return items, usage
+
+    try:
+        kept = json.loads(match.group(0))
+    except json.JSONDecodeError as e:
+        print(f"[Dedupe] JSON 파싱 실패: {e}, 원본 반환")
+        return items, usage
+
+    if not isinstance(kept, list) or not all(isinstance(x, str) for x in kept):
+        print(f"[Dedupe] 응답이 str 배열이 아님, 원본 반환")
+        return items, usage
+
+    # 안전장치: kept는 입력의 부분집합이어야 함 (Claude가 재작성하면 거부)
+    items_set = set(items)
+    if not all(x in items_set for x in kept):
+        unknown = [x for x in kept if x not in items_set]
+        print(f"[Dedupe] 응답에 입력 외 항목 포함, 원본 반환: {unknown[:3]}")
+        return items, usage
+
+    # 입력 순서 유지하면서 kept에 있는 것만 남김
+    kept_set = set(kept)
+    result = [x for x in items if x in kept_set]
+    removed = len(items) - len(result)
+    if removed > 0:
+        print(f"[Dedupe] {removed}개 의미 중복 제거 ({len(items)}→{len(result)})")
+    else:
+        print(f"[Dedupe] 중복 없음 ({len(items)}개)")
     return result, usage
 
 
