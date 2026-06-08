@@ -158,6 +158,43 @@ def collect_today_daily_todo_page(today: datetime) -> tuple[list[str], list[str]
     return uncompleted, completed
 
 
+def collect_today_daily_todo_by_category(today: datetime) -> dict[str, list[tuple[str, bool]]]:
+    """`YYYY-MM-DD TODO` 페이지를 카테고리(heading_2)별로 묶어 to-do를 수집한다.
+
+    Returns:
+        {"업무": [("task", checked), ...], "개인": [...], ...}
+        헤딩 앞(카테고리 없는) 항목은 "" 키에 들어간다.
+        페이지가 없으면 빈 dict.
+    """
+    token = os.environ.get("NOTION_TOKEN")
+    if not token:
+        return {}
+    client = Client(auth=token)
+
+    title_query = today.strftime("%Y-%m-%d") + " TODO"
+    page_id = _find_page_by_title(client, title_query)
+    if not page_id:
+        print(f"[Notion-Daily] '{title_query}' 페이지를 찾지 못함")
+        return {}
+
+    blocks = _list_all_children(client, page_id)
+    result: dict[str, list[tuple[str, bool]]] = {}
+    current = ""
+    for b in blocks:
+        btype = b.get("type")
+        if btype == "heading_2":
+            current = "".join(
+                rt.get("plain_text", "") for rt in b["heading_2"].get("rich_text", [])
+            ).strip()
+        elif btype == "to_do":
+            text = "".join(
+                rt.get("plain_text", "") for rt in b["to_do"].get("rich_text", [])
+            ).strip()
+            if text:
+                result.setdefault(current, []).append((text, b["to_do"].get("checked", False)))
+    return result
+
+
 def _find_page_by_title(client: Client, title_query: str) -> str | None:
     results = client.search(query=title_query, filter={"property": "object", "value": "page"})
     for r in results.get("results", []):

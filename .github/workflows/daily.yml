@@ -2,8 +2,8 @@ name: 하루봇 daily run
 
 on:
   schedule:
-    # 매일 오후 8시 KST = UTC 11:00
-    - cron: '0 11 * * *'
+    # 매일 밤 10시 KST = UTC 13:00
+    - cron: '0 13 * * *'
   workflow_dispatch: # 수동 실행
 
 permissions:
