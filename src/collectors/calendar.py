@@ -39,9 +39,11 @@ def collect_calendar(period_days: int) -> list[dict]:
 
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
+    today_date = now_kst.date()
     start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     results = []
+    dropped = 0
 
     for cal in calendars:
         try:
@@ -66,6 +68,13 @@ def collect_calendar(period_days: int) -> list[dict]:
                 dtstart = vevent.dtstart.value
                 dtend = vevent.dtend.value if hasattr(vevent, "dtend") else dtstart
 
+                # 종일 일정은 날짜만 있는 floating 값이라, caldav가 검색창을 UTC로
+                # 변환할 때 인접한 날(주로 어제) 일정이 오늘 창에 섞여 들어온다.
+                # 실제 일정 날짜가 KST 오늘에 걸치는지 명시적으로 한 번 더 거른다.
+                if not _event_on_kst_day(dtstart, dtend, today_date, KST):
+                    dropped += 1
+                    continue
+
                 # 종료 시각이 현재보다 이전이면 완료
                 if hasattr(dtend, 'hour'):
                     done = dtend <= now_kst
@@ -82,5 +91,22 @@ def collect_calendar(period_days: int) -> list[dict]:
             except Exception:
                 continue
 
-    print(f"[Calendar] {len(results)}개 일정 수집 완료")
+    msg = f"[Calendar] {len(results)}개 일정 수집 완료"
+    if dropped:
+        msg += f" (KST 오늘 아닌 {dropped}개 제외)"
+    print(msg)
     return results
+
+
+def _event_on_kst_day(dtstart, dtend, day, kst) -> bool:
+    """일정이 KST 기준 `day`(date)에 걸치는지 판정.
+
+    - 시간 지정 일정(datetime): KST로 변환한 시작~종료 날짜 구간이 day를 포함
+    - 종일 일정(date): iCal에서 dtend는 배타적(다음날) → [dtstart, dtend) 반열림 구간
+    """
+    if hasattr(dtstart, "hour"):  # 시간 지정
+        start_d = dtstart.astimezone(kst).date()
+        end_d = dtend.astimezone(kst).date() if hasattr(dtend, "hour") else start_d
+        return start_d <= day <= end_d
+    end_date = dtend if (dtend and dtend > dtstart) else dtstart + timedelta(days=1)
+    return dtstart <= day < end_date

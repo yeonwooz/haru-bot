@@ -7,7 +7,7 @@
 4. Telegram에 일정 요약(텍스트) + 태스크 토글 키보드(미완료 항목 + 🏁 완료 버튼) 전송
 5. 사용자가 🏁 완료를 누르면 webhook이 피드백 생성·저장 (api/webhook.py)
 
-사용자 답장(코멘트/설정)은 Vercel webhook이 비동기로 받아 직접 Notion에 반영한다.
+사용자 답장(코멘트/설정)은 Vercel webhook이 비동기로 받아 직접 Notion DB에 반영한다.
 """
 
 import sys
