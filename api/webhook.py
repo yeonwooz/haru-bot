@@ -301,6 +301,33 @@ def _sync_todos_in_daily_page(client: Client, date: str, items: list[tuple[str, 
         cursor = resp.get("next_cursor")
 
 
+def _append_deferred_to_daily(client: Client, date: str, items: list[str]):
+    """사용자가 '내일로' 고른 항목을 '{date} TODO' 페이지의 '🔜 내일로' 섹션에 추가한다.
+
+    다음날 06시 notion-daily-todo가 전날 페이지의 이 섹션만 읽어 오늘로 가져온다
+    (선택적 이월). 매칭 키는 heading 텍스트의 '내일로' 부분.
+    """
+    daily_page_id = _find_daily_todo_page_id(client, date)
+    if not daily_page_id:
+        print("[webhook] daily-todo 페이지 없음 — 내일로 저장 건너뜀")
+        return
+    children = [
+        {"object": "block", "type": "divider", "divider": {}},
+        {"object": "block", "type": "heading_2",
+         "heading_2": {"rich_text": [{"text": {"content": "🔜 내일로"}}]}},
+    ]
+    for t in items:
+        children.append({
+            "object": "block", "type": "to_do",
+            "to_do": {"rich_text": [{"text": {"content": t[:2000]}}], "checked": False},
+        })
+    try:
+        client.blocks.children.append(block_id=daily_page_id, children=children)
+        print(f"[webhook] 내일로 {len(items)}개 저장 ('{date} TODO')")
+    except Exception as e:
+        print(f"[webhook] 내일로 저장 실패: {e}")
+
+
 def _append_setting_to_settings_page(client: Client, setting_text: str):
     client.blocks.children.append(
         block_id=NOTION_SETTINGS_PAGE_ID,
@@ -563,6 +590,115 @@ def _handle_done(callback_query: dict, pid_short: str):
         print(f"[webhook] 피드백 처리 실패: {e}")
         _send_message(chat_id, "피드백 생성 중 문제가 발생했어요.")
         return
+
+    # 완료 직후 "오늘 못한 것 중 내일로 미룰 항목" 인터랙션. 미완료가 없으면 건너뜀.
+    uncompleted = [t for t, d in items if not d]
+    if uncompleted:
+        _send_defer_keyboard(chat_id, pid_short, uncompleted)
+    else:
+        _send_status_keyboard(chat_id, pid_short)
+
+
+def _build_defer_keyboard(uncompleted: list[str], pid_short: str):
+    keyboard = []
+    for i, t in enumerate(uncompleted):
+        label = (t[:40] + "...") if len(t) > 40 else t
+        keyboard.append([{"text": f"☐ {label}", "callback_data": f"d:{pid_short}:{i}"}])
+    keyboard.append([{"text": "🔜 내일로 넘기기", "callback_data": f"dd:{pid_short}"}])
+    return keyboard
+
+
+def _send_defer_keyboard(chat_id: int, pid_short: str, uncompleted: list[str]):
+    try:
+        _telegram_api("sendMessage", {
+            "chat_id": chat_id,
+            "text": "오늘 못한 항목 중 내일로 미룰 것들을 체크해줘.",
+            "reply_markup": {"inline_keyboard": _build_defer_keyboard(uncompleted, pid_short)},
+        })
+    except Exception as e:
+        print(f"[webhook] defer 키보드 전송 실패: {e}")
+
+
+def _handle_defer_toggle(callback_query: dict, pid_short: str, index: int):
+    """내일로-미룰 후보 버튼의 ☐/☑ 표시를 토글한다 (선택 상태는 키보드 마크업에만 보관)."""
+    callback_id = callback_query["id"]
+    message = callback_query["message"]
+    chat_id = message["chat"]["id"]
+    message_id = message["message_id"]
+
+    try:
+        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
+    except Exception:
+        pass
+
+    markup = message.get("reply_markup", {}).get("inline_keyboard", [])
+    target = f"d:{pid_short}:{index}"
+    for row in markup:
+        for btn in row:
+            if btn.get("callback_data") != target:
+                continue
+            txt = btn.get("text", "")
+            if txt.startswith("☑"):
+                btn["text"] = "☐" + txt[1:]
+            elif txt.startswith("☐"):
+                btn["text"] = "☑" + txt[1:]
+    try:
+        _telegram_api("editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": {"inline_keyboard": markup},
+        })
+    except Exception as e:
+        print(f"[webhook] defer 토글 갱신 실패: {e}")
+
+
+def _handle_defer_done(callback_query: dict, pid_short: str):
+    """☑로 고른 항목을 그날 TODO 페이지의 '🔜 내일로' 섹션에 저장하고 status로 넘어간다."""
+    callback_id = callback_query["id"]
+    message = callback_query["message"]
+    chat_id = message["chat"]["id"]
+    message_id = message["message_id"]
+
+    try:
+        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
+    except Exception:
+        pass
+
+    # 마크업에서 ☑ 표시된 후보의 index 수집
+    markup = message.get("reply_markup", {}).get("inline_keyboard", [])
+    selected: list[int] = []
+    for row in markup:
+        for btn in row:
+            cd = btn.get("callback_data", "")
+            if cd.startswith(f"d:{pid_short}:") and btn.get("text", "").startswith("☑"):
+                try:
+                    selected.append(int(cd.split(":")[2]))
+                except ValueError:
+                    pass
+
+    client, _ = _notion_client_and_db()
+    deferred: list[str] = []
+    if client and selected:
+        try:
+            items = _read_tasks(client, pid_short)
+            uncompleted = [t for t, d in items if not d]
+            deferred = [uncompleted[i] for i in selected if 0 <= i < len(uncompleted)]
+            date = _get_page_date(client, pid_short)
+            if deferred and date:
+                _append_deferred_to_daily(client, date, deferred)
+        except Exception as e:
+            print(f"[webhook] 내일로 처리 실패: {e}")
+
+    text = f"{len(deferred)}개를 내일로 넘겼어." if deferred else "내일로 넘긴 항목은 없어."
+    try:
+        _telegram_api("editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "reply_markup": {"inline_keyboard": []},
+        })
+    except Exception as e:
+        print(f"[webhook] defer 완료 메시지 갱신 실패: {e}")
 
     _send_status_keyboard(chat_id, pid_short)
 
@@ -913,6 +1049,18 @@ class handler(BaseHTTPRequestHandler):
                     parts = data.split(":")
                     if len(parts) == 2:
                         _handle_done(cq, parts[1])
+                elif data.startswith("dd:"):
+                    parts = data.split(":")
+                    if len(parts) == 2:
+                        _handle_defer_done(cq, parts[1])
+                elif data.startswith("d:"):
+                    parts = data.split(":")
+                    if len(parts) == 3:
+                        try:
+                            idx = int(parts[2])
+                            _handle_defer_toggle(cq, parts[1], idx)
+                        except ValueError:
+                            pass
                 elif data.startswith("s:"):
                     parts = data.split(":")
                     if len(parts) == 3:
