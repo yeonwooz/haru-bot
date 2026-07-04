@@ -4,6 +4,10 @@
 PERIOD = "daily"
 PERIOD_DAYS = 1
 
+# 저녁 일기 예약 시각 (KST) — .github/workflows/daily.yml cron(UTC 12:00)과 맞출 것.
+# main.py가 "가장 최근 예약 시각"으로 대상 날짜를 정하는 기준.
+DAILY_RUN_HOUR_KST = 21
+
 # 오늘 한 일 요약 개수
 SUMMARY_COUNT = 3
 

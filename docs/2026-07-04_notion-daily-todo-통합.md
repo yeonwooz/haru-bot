@@ -60,8 +60,11 @@ webhook(Vercel)은 이번 범위 제외.
 
 - **사고**: 7/3 밤 daily run이 GitHub cron 지연으로 UTC 15:02(= KST 7/4 00:02)에 실행
   → "오늘"이 7/4로 잡혀 빈 7/4 일기가 새벽에 생기고 7/3 일기는 누락
-- **수정**: 실행 시각에서 6시간 당긴 anchor를 날짜/캘린더/TODO 수집 기준으로 사용.
-  21시 정상 실행이든 자정 넘긴 지연 실행이든 같은 날짜가 나옴
+- **수정**: "가장 최근에 도래한 예약 시각(매일 21:00 KST, `config.DAILY_RUN_HOUR_KST`)"을
+  anchor로 사용 — cron이 **최대 24시간 지연돼도 원래 의도한 날짜**가 나오고, 그 이상이면
+  다음 예약분이 도래한 것이므로 다음 날짜. (처음엔 -6h 상대 오프셋으로 구현했다가
+  6시간 이상 지연에서 다시 밀리는 문제가 있어 절대 예약시각 방식으로 교체)
+- `python src/main.py --date 2026-07-03` 형태로 누락된 날짜 백필 가능
 - `collect_calendar(period_days, anchor=None)` 파라미터 추가
 
 ### 7. webhook: `/일기` prefix (api/webhook.py — master push 시 Vercel 자동 배포)

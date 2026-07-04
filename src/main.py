@@ -92,15 +92,30 @@ def _collect_uncompleted_tasks(calendar_data: list[dict], notion_data: list[dict
     return tasks
 
 
-def run():
+def _resolve_anchor(now: datetime, date_arg: str | None) -> datetime:
+    """일기 대상 날짜의 기준 시각을 정한다.
+
+    - `--date YYYY-MM-DD` 명시 시: 그 날짜의 예약 시각 (누락분 백필용)
+    - 기본: **가장 최근에 도래한 예약 시각** (매일 DAILY_RUN_HOUR_KST시).
+      cron이 최대 24시간 지연돼도 원래 의도한 날짜가 나오고, 그 이상 지연이면
+      다음 예약분이 이미 도래한 것이므로 다음 날짜가 된다.
+      (상대 오프셋(-6h) 방식은 6시간 이상 지연에서 다시 밀리는 문제가 있었음)
+    """
+    if date_arg:
+        d = datetime.strptime(date_arg, "%Y-%m-%d")
+        return d.replace(hour=config.DAILY_RUN_HOUR_KST, tzinfo=KST)
+    scheduled = now.replace(hour=config.DAILY_RUN_HOUR_KST, minute=0, second=0, microsecond=0)
+    if now < scheduled:
+        scheduled -= timedelta(days=1)
+    return scheduled
+
+
+def run(date_arg: str | None = None):
     """전체 파이프라인을 실행한다."""
     load_dotenv()
     start_time = time.time()
     now = datetime.now(KST)
-    # Actions cron 지연으로 자정을 넘겨 실행돼도 "그날 저녁" 일기가 되도록 6시간 당긴
-    # 시각을 날짜/수집 기준으로 쓴다 (2026-07-03 밤 예약분이 07-04 00:02에 실행되며
-    # 빈 7/4 일기가 생기고 7/3 일기가 누락된 사고 재발 방지)
-    anchor = now - timedelta(hours=6)
+    anchor = _resolve_anchor(now, date_arg)
     today = anchor.strftime("%Y-%m-%d")
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
@@ -180,4 +195,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    # 사용법: python src/main.py [--date 2026-07-03]  (누락된 날짜 백필)
+    date_arg = None
+    if "--date" in sys.argv:
+        date_arg = sys.argv[sys.argv.index("--date") + 1]
+    run(date_arg)
