@@ -18,6 +18,7 @@ Notion 데이터 모델은 src/diary_store.py docstring 참조 (discussion 단�
 
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
@@ -552,6 +553,64 @@ def _handle_toggle(callback_query: dict, pid_short: str, index: int):
             print(f"[webhook] editMessageReplyMarkup 실패: {e}")
     except Exception as e:
         print(f"[webhook] 토글 처리 실패: {e}")
+
+
+def _handle_ambiguous(callback_query: dict, pid_short: str, action: str):
+    """캘린더 애매 항목 질문(본문의 「item」)에 대한 답변 처리.
+
+    - done: 오늘 한 일로 tasks에 체크된 상태로 추가
+    - todo: 미완료 할일로 tasks에 추가 (이후 defer 흐름에서 내일로 미룰 수 있음)
+    - memo: 기록하지 않음
+    """
+    callback_id = callback_query["id"]
+    message = callback_query["message"]
+    chat_id = message["chat"]["id"]
+    message_id = message["message_id"]
+
+    try:
+        _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
+    except Exception:
+        pass
+
+    # 항목 텍스트는 질문 메시지 본문의 「...」에서 파싱 (telegram_bot.send_ambiguous_item_question 형식)
+    m = re.search(r"「(.+)」", message.get("text", ""))
+    if not m:
+        print("[webhook] 애매 항목 질문에서 항목 텍스트를 찾지 못함")
+        return
+    item = m.group(1)
+
+    def _edit(text: str):
+        try:
+            _telegram_api("editMessageText", {
+                "chat_id": chat_id, "message_id": message_id, "text": text,
+            })
+        except Exception as e:
+            print(f"[webhook] editMessageText 실패: {e}")
+
+    if action == "memo":
+        _edit(f"📝 「{item}」는 메모구나, 기록하지 않을게.")
+        return
+
+    client, _ = _notion_client_and_db()
+    if not client:
+        return
+
+    try:
+        items = _read_tasks(client, pid_short)
+        existing = [t for t, _ in items]
+        if item in existing:
+            items = [(t, (action == "done") if t == item else d) for t, d in items]
+        else:
+            items.append((item, action == "done"))
+        _write_tasks(client, pid_short, items)
+    except Exception as e:
+        print(f"[webhook] 애매 항목 기록 실패: {e}")
+        return
+
+    if action == "done":
+        _edit(f"✅ 「{item}」 오늘 한 일로 기록했어.")
+    else:
+        _edit(f"☐ 「{item}」 미완료 할일로 기록해뒀어.")
 
 
 def _handle_done(callback_query: dict, pid_short: str):
@@ -1107,6 +1166,10 @@ class handler(BaseHTTPRequestHandler):
                             _handle_status(cq, parts[1], idx)
                         except ValueError:
                             pass
+                elif data.startswith("a:"):
+                    parts = data.split(":")
+                    if len(parts) == 3 and parts[2] in ("done", "todo", "memo"):
+                        _handle_ambiguous(cq, parts[1], parts[2])
                 elif data.startswith("check:"):
                     _handle_legacy_check(cq)
             elif "message" in body:

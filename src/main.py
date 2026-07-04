@@ -31,8 +31,8 @@ from src.collectors import (
     collect_today_daily_todo_page,
     collect_github,
 )
-from src.summarizer import generate_summary, dedupe_tasks
-from src.telegram_bot import send_summary, send_task_keyboard
+from src.summarizer import generate_summary, dedupe_tasks, split_ambiguous_calendar
+from src.telegram_bot import send_summary, send_task_keyboard, send_ambiguous_item_question
 from src.diary_store import (
     save_diary,
     load_settings,
@@ -81,11 +81,14 @@ def _dedupe(items: list[str]) -> list[str]:
 
 
 def _collect_uncompleted_tasks(calendar_data: list[dict], notion_data: list[dict]) -> list[str]:
-    """버튼으로 토글할 미완료 태스크 raw 목록 (캘린더 + 노션 할일 중 done=false)."""
+    """버튼으로 토글할 태스크 후보 raw 목록 (캘린더 전체 + 노션 할일 중 unchecked).
+
+    캘린더 일정은 시간이 지났어도 실제로 했는지 알 수 없으므로 전부 후보로 넣고,
+    사용자가 체크한 것만 "한 일"이 된다.
+    """
     tasks: list[str] = []
     for item in calendar_data:
-        if not item.get("done"):
-            tasks.append(item["summary"])
+        tasks.append(item["summary"])
     for item in notion_data:
         if not item.get("done"):
             tasks.append(item["title"])
@@ -133,10 +136,16 @@ def run(date_arg: str | None = None):
     github_data = collect_github(config.PERIOD_DAYS)
     todo_uncompleted, todo_completed = collect_today_daily_todo_page(anchor)
 
+    # 캘린더 항목 중 일정인지 메모인지 애매한 것은 추측하지 않고 텔레그램으로 물어본다
+    calendar_data, ambiguous_calendar, classify_usage = split_ambiguous_calendar(
+        calendar_data, config.CLAUDE_MODEL
+    )
+
     total = len(calendar_data) + len(notion_data) + len(github_data)
     print(
         f"\n총 {total}개 항목 수집 (Calendar: {len(calendar_data)}, Notion: {len(notion_data)}, "
-        f"GitHub: {len(github_data)}), 미완료 {len(todo_uncompleted)}, 오늘완료 {len(todo_completed)}\n"
+        f"GitHub: {len(github_data)}), 캘린더 애매 {len(ambiguous_calendar)}, "
+        f"미완료 {len(todo_uncompleted)}, 오늘완료 {len(todo_completed)}\n"
     )
 
     # 2. 요약 생성 (캘린더 일정이 있거나 오늘 완료한 태스크가 있으면 Claude 호출)
@@ -158,9 +167,14 @@ def run(date_arg: str | None = None):
         usage = {"input_tokens": 0, "output_tokens": 0}
         print("[Summarizer] 캘린더 일정 0개 + 오늘 완료 태스크 0개 - Claude 호출 생략")
 
+    usage["input_tokens"] += classify_usage["input_tokens"]
+    usage["output_tokens"] += classify_usage["output_tokens"]
+
     uncompleted_tasks = _dedupe(
         _collect_uncompleted_tasks(calendar_data, notion_data) + todo_uncompleted
     )
+    # 이미 오늘 체크한 항목과 같은 것은 다시 묻지 않음
+    uncompleted_tasks = [t for t in uncompleted_tasks if t not in todo_completed]
 
     # 의미상 중복 ("회의 준비" vs "회의 준비하기") 제거 — 일기·텔레그램 양쪽에 반영
     uncompleted_tasks, dedupe_usage = dedupe_tasks(uncompleted_tasks, config.CLAUDE_MODEL)
@@ -184,6 +198,9 @@ def run(date_arg: str | None = None):
         send_task_keyboard(page_id, uncompleted_tasks)
     elif not uncompleted_tasks:
         print("[Telegram] 미완료 태스크 없음 - 태스크 키보드 생략")
+    if page_id:
+        for item in ambiguous_calendar:
+            send_ambiguous_item_question(page_id, item["summary"])
 
     # 5. 사용량 기록 (Gemini 폴백이 발생했으면 실제 사용 모델로 기록)
     duration_sec = time.time() - start_time

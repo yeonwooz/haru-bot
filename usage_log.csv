@@ -147,3 +147,4 @@ date,model,input_tokens,output_tokens,cost_usd,duration_sec,source,note
 2026-07-04,claude-fable-5,800000,50000,15.7500,1800,claude-code,notion-daily-todo 통합(06시 생성+아침알림) + 일기 21시 이동 + Claude 재시도/Gemini 폴백 + GitHub 커밋 수집 부활
 2026-07-04,claude-opus-4-6,1750,218,0.0426,22.5,bot,
 2026-07-04,claude-opus-4-6,2769,305,0.0644,24.2,bot,
+2026-07-05,claude-fable-5,300000,20000,6.0000,900,claude-code,한일=사용자 체크만 인정(지난 캘린더 일정 자동완료 제거) + 애매한 캘린더 항목 텔레그램 질문 흐름

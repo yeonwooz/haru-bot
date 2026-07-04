@@ -77,18 +77,13 @@ def collect_calendar(period_days: int, anchor: datetime | None = None) -> list[d
                     dropped += 1
                     continue
 
-                # 종료 시각이 현재보다 이전이면 완료
-                if hasattr(dtend, 'hour'):
-                    done = dtend <= now_kst
-                else:
-                    done = True  # 종일 일정은 완료로 간주
-
+                # 일정이 지났다고 실제로 했다는 뜻은 아니므로 완료 여부는 판정하지 않는다.
+                # "한 일"은 사용자가 직접 체크한 항목에서만 나온다 (2026-07-04 만두 사건).
                 results.append({
                     "summary": summary,
                     "description": description,
                     "start": str(dtstart),
                     "end": str(dtend),
-                    "done": done,
                 })
             except Exception:
                 continue

@@ -13,8 +13,9 @@ SYSTEM_PROMPT = """당신은 사용자의 하루를 정리해주는 긍정적이
 사용자의 오늘 캘린더 일정과 오늘 완료한 태스크를 자연스럽게 한 글에 녹여 정리합니다.
 
 데이터 소스별 의미:
-- 캘린더 일정: 시간이 있는 일정 (오전/오후/밤으로 분류)
-- 오늘 완료한 태스크: 노션 "할 일" 페이지에서 오늘 체크된 항목들 (시간 무관)
+- 캘린더 일정: 오늘 캘린더에 잡혀 있던 일정 (오전/오후/밤으로 분류). 시간이 지났어도 실제로 했는지는 알 수 없다
+- 오늘 완료한 태스크: 사용자가 직접 체크한 항목들 (시간 무관). 이것만이 확실한 "오늘 한 일"이다
+- 그 외 (Notion 페이지, GitHub 커밋): 하루의 맥락을 파악하기 위한 참고 정보
 
 출력 형식 예시:
 오전
@@ -34,7 +35,8 @@ SYSTEM_PROMPT = """당신은 사용자의 하루를 정리해주는 긍정적이
 규칙:
 - 캘린더 일정은 시간 정보로 오전(~12시)/오후(12~18시)/밤(18시~)으로 분류
 - 해당 시간대에 일정이 없으면 그 시간대 헤더는 생략
-- 완료한 태스크는 "오늘 한 일" 헤더 아래로 모음. 없으면 "오늘 한 일" 헤더 자체 생략
+- "오늘 한 일" 아래에는 "오늘 완료한 태스크" 섹션의 항목만 넣는다. 캘린더 일정·Notion·GitHub 항목을 여기로 옮기지 않는다. 완료한 태스크가 없으면 "오늘 한 일" 헤더 자체 생략
+- 사용자가 체크하지 않은 것을 했다고 단정하지 않는다. 캘린더 일정은 마무리 문단에서도 "~ 일정이 있었네요", "~ 잘 보냈길 바라요"처럼 추정·기원 톤으로만 언급 (예: "만두 빚었네요" ❌ → "만두 일정이 있었는데 잘 됐나요?" ⭕)
 - 완료/미완료 표시(✓) 같은 마크는 사용하지 않는다
 - 이모지·헤더 라벨([오늘의 일정] 같은 것)은 사용하지 않음
 - 딱딱한 보고서가 아닌, 친근하고 자연스러운 톤
@@ -73,6 +75,66 @@ def generate_summary(
     )
     print(f"[Summarizer] 요약 완료 ({len(result)}자, 입력 {usage['input_tokens']}토큰, 출력 {usage['output_tokens']}토큰)")
     return result, usage
+
+
+CALENDAR_CLASSIFY_SYSTEM_PROMPT = """사용자의 오늘 캘린더 항목 리스트에서 "사용자가 직접 하는 일정/할일"이라고 확실하게 판단되는 항목의 번호만 고른다.
+
+캘린더에는 일정이 아닌 것도 적혀 있다:
+- 명사만 덩그러니 있는 메모 (예: "만두" = 냉동실에 만두 있다는 표시일 수 있음)
+- 재고·구매·정보 메모 (예: "우유 2팩", "공유기 비번 변경됨")
+- 상태 표시 (예: "재택", "휴가")
+- 기념일·디데이 표시 (예: "D-30", "결혼기념일")
+- 다른 사람의 일정 (사용자가 하는 일이 아님)
+
+응답의 schedule 배열에는 확실한 일정/할일의 번호(정수)만 넣는다.
+조금이라도 애매하면 번호를 넣지 않는다. 추측 금지 — 애매한 항목은 사용자에게 직접 물어보게 된다."""
+
+CALENDAR_CLASSIFY_SCHEMA = {
+    "type": "object",
+    "properties": {"schedule": {"type": "array", "items": {"type": "integer"}}},
+    "required": ["schedule"],
+    "additionalProperties": False,
+}
+
+
+def split_ambiguous_calendar(
+    calendar_data: list[dict], model: str
+) -> tuple[list[dict], list[dict], dict]:
+    """캘린더 항목을 '확실한 일정/할일'과 '애매한 항목(사용자에게 물어볼 것)'으로 나눈다.
+
+    인덱스 기반 선택 (모델이 번호만 고름). LLM 호출이 실패하면
+    전부 일정으로 간주해 기존 동작을 유지한다.
+
+    Returns:
+        (schedule_items, ambiguous_items, {"input_tokens": int, "output_tokens": int})
+    """
+    empty_usage = {"input_tokens": 0, "output_tokens": 0}
+    if not calendar_data:
+        return [], [], empty_usage
+    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+        return calendar_data, [], empty_usage
+
+    user_prompt = "오늘 캘린더 항목 리스트 (번호: 제목):\n" + "\n".join(
+        f"{i}: {item['summary']}" for i, item in enumerate(calendar_data)
+    )
+
+    try:
+        text, usage = llm.generate(
+            user_prompt, model=model, max_tokens=1000,
+            system=CALENDAR_CLASSIFY_SYSTEM_PROMPT, schema=CALENDAR_CLASSIFY_SCHEMA,
+        )
+        schedule_idx = {
+            i for i in json.loads(text)["schedule"]
+            if isinstance(i, int) and 0 <= i < len(calendar_data)
+        }
+    except Exception as e:
+        print(f"[Calendar-Classify] LLM 호출 실패: {e}, 전부 일정으로 간주")
+        return calendar_data, [], empty_usage
+
+    schedule = [item for i, item in enumerate(calendar_data) if i in schedule_idx]
+    ambiguous = [item for i, item in enumerate(calendar_data) if i not in schedule_idx]
+    print(f"[Calendar-Classify] 확실한 일정 {len(schedule)}개, 애매한 항목 {len(ambiguous)}개")
+    return schedule, ambiguous, usage
 
 
 DEDUPE_SYSTEM_PROMPT = """사용자의 오늘 미완료 todo 리스트에서 의미상 중복되는 항목을 찾아 그룹별로 대표 하나만 남긴다.
@@ -152,28 +214,26 @@ def _build_user_prompt(
     if calendar_data:
         lines = []
         for item in calendar_data:
-            done_mark = " (done=true)" if item.get("done") else " (done=false)"
-            lines.append(f"- {item['start']} | {item['summary']}{done_mark}")
+            lines.append(f"- {item['start']} | {item['summary']}")
             if item["description"]:
                 lines.append(f"  설명: {item['description']}")
-        sections.append("### 캘린더 일정\n" + "\n".join(lines))
+        sections.append("### 캘린더 일정 (실제로 했는지는 알 수 없음)\n" + "\n".join(lines))
 
     if notion_data:
         lines = []
         for item in notion_data:
             tags = ", ".join(item["tags"]) if item["tags"] else ""
             tag_str = f" | 태그: {tags}" if tags else ""
-            done_mark = " (done=true)" if item.get("done") else " (done=false)"
-            lines.append(f"- {item['title']}{tag_str}{done_mark}")
+            lines.append(f"- {item['title']}{tag_str}")
             if item["excerpt"]:
                 lines.append(f"  내용: {item['excerpt']}")
-        sections.append("### Notion 작업/할일\n" + "\n".join(lines))
+        sections.append("### 오늘 편집한 Notion 페이지 (참고용)\n" + "\n".join(lines))
 
     if github_data:
         lines = []
         for item in github_data:
-            lines.append(f"- [{item['repo']}] {item['message']} (done=true)")
-        sections.append("### GitHub 커밋\n" + "\n".join(lines))
+            lines.append(f"- [{item['repo']}] {item['message']}")
+        sections.append("### GitHub 커밋 (참고용)\n" + "\n".join(lines))
 
     if completed_today:
         lines = [f"- {t}" for t in completed_today]
