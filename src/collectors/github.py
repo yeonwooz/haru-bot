@@ -7,8 +7,8 @@ import httpx
 
 KST = timezone(timedelta(hours=9))
 GITHUB_API = "https://api.github.com"
-# TODO: 회사 git 계정도 수집하기
-# TODO: GITHUB_TOKEN 발급 및 .env, GitHub Secrets 등록
+# Actions에서는 자동 GITHUB_TOKEN 사용 (daily.yml) — public repo 커밋 검색만 가능
+# 회사 git 계정은 수집하지 않음 (개인 계정만)
 GITHUB_USER = "yeonwooz"
 
 

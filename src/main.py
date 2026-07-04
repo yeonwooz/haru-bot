@@ -1,6 +1,6 @@
 """하루봇 메인 파이프라인
 
-매일 오후 8시(KST) 실행되어:
+매일 밤 9시(KST, daily.yml cron UTC 12:00) 실행되어:
 1. Calendar / Notion / GitHub에서 오늘 활동 수집
 2. Claude API로 [오늘의 일정] + [태스크] 두 섹션 요약 생성
 3. Notion 일기 페이지 생성 (본문은 heading_2 + paragraph 블록, tasks는 [ ] 체크박스 rich_text)
@@ -97,7 +97,11 @@ def run():
     load_dotenv()
     start_time = time.time()
     now = datetime.now(KST)
-    today = now.strftime("%Y-%m-%d")
+    # Actions cron 지연으로 자정을 넘겨 실행돼도 "그날 저녁" 일기가 되도록 6시간 당긴
+    # 시각을 날짜/수집 기준으로 쓴다 (2026-07-03 밤 예약분이 07-04 00:02에 실행되며
+    # 빈 7/4 일기가 생기고 7/3 일기가 누락된 사고 재발 방지)
+    anchor = now - timedelta(hours=6)
+    today = anchor.strftime("%Y-%m-%d")
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
 
@@ -109,10 +113,10 @@ def run():
 
     # 1. 데이터 수집
     print("--- 1단계: 데이터 수집 ---")
-    calendar_data = collect_calendar(config.PERIOD_DAYS)
+    calendar_data = collect_calendar(config.PERIOD_DAYS, anchor)
     notion_data = collect_notion(config.PERIOD_DAYS)
     github_data = collect_github(config.PERIOD_DAYS)
-    todo_uncompleted, todo_completed = collect_today_daily_todo_page(now)
+    todo_uncompleted, todo_completed = collect_today_daily_todo_page(anchor)
 
     total = len(calendar_data) + len(notion_data) + len(github_data)
     print(
@@ -166,9 +170,11 @@ def run():
     elif not uncompleted_tasks:
         print("[Telegram] 미완료 태스크 없음 - 태스크 키보드 생략")
 
-    # 5. 사용량 기록
+    # 5. 사용량 기록 (Gemini 폴백이 발생했으면 실제 사용 모델로 기록)
     duration_sec = time.time() - start_time
-    _log_usage(today, duration_sec, usage, config.CLAUDE_MODEL)
+    model_used = usage.pop("model", config.CLAUDE_MODEL)
+    note = "gemini 폴백" if model_used != config.CLAUDE_MODEL else ""
+    _log_usage(today, duration_sec, usage, model_used, note)
 
     print(f"\n=== 하루봇 완료! ===")
 

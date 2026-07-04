@@ -8,7 +8,7 @@
 ```mermaid
 flowchart TD
     subgraph Trigger
-        GHA["GitHub Actions<br/>매일 오후 8시 KST"]
+        GHA["GitHub Actions<br/>매일 밤 9시 KST"]
     end
 
     GHA --> MAIN["main.py :: run()"]

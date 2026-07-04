@@ -1,0 +1,30 @@
+name: 하루봇 daily todo 생성 + 아침 알림
+
+on:
+  schedule:
+    # 매일 오전 6시 KST = UTC 21:00 (전날)
+    - cron: '0 21 * * *'
+  workflow_dispatch: # 수동 실행
+
+jobs:
+  create-and-notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Create daily TODO page and notify
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          ROOT_PAGE_ID: ${{ secrets.ROOT_PAGE_ID }}
+          TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: uv run python src/daily_todo.py

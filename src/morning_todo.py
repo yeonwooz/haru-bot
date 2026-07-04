@@ -1,9 +1,10 @@
-"""오전 7시(KST) 텔레그램 todo 알림
+"""아침 텔레그램 todo 알림
 
-notion-daily-todo 봇이 오전 6시에 만들어둔 `YYYY-MM-DD TODO` 페이지를
-카테고리별로 읽어 텔레그램으로 오늘의 할 일을 알려준다.
+src/daily_todo.py가 오전 6시(KST)에 `YYYY-MM-DD TODO` 페이지를 생성한 직후
+이 모듈의 run()을 호출해, 페이지를 카테고리별로 읽어 텔레그램으로 알려준다.
+(구 notion-daily-todo 봇 통합 전에는 morning-todo.yml이 7시에 따로 실행했음)
 
-일기 파이프라인(src/main.py)과 별개의 진입점이며, Notion 쓰기 없이
+단독 실행도 가능하며(uv run python src/morning_todo.py), Notion 쓰기 없이
 읽기 + 텔레그램 발송만 한다.
 """
 

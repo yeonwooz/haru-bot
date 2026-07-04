@@ -2,8 +2,8 @@ name: 하루봇 daily run
 
 on:
   schedule:
-    # 매일 밤 10시 KST = UTC 13:00
-    - cron: '0 13 * * *'
+    # 매일 밤 9시 KST = UTC 12:00
+    - cron: '0 12 * * *'
   workflow_dispatch: # 수동 실행
 
 permissions:
@@ -22,12 +22,15 @@ jobs:
       - name: Run haru-bot
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DIARY_DB_ID: ${{ secrets.NOTION_DIARY_DB_ID }}
+          # Actions 자동 토큰 — public repo 커밋 검색용 (별도 발급 불필요)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run python src/main.py
 
       - name: Commit usage log

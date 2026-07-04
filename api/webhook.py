@@ -30,6 +30,10 @@ from notion_client import Client
 KST = timezone(timedelta(hours=9))
 SETTING_PREFIXES = ("/설정 ", "/set ")
 SETTING_BARE = ("/설정", "/set")
+# "/일기 내용" 형태만 일기에 저장 (없는 날짜면 어느 일기인지 질문).
+# prefix 없는 일반 텍스트는 저장하지 않고 클로드와 대화만 한다 (2026-07-04 변경).
+DIARY_PREFIXES = ("/일기 ",)
+DIARY_BARE = ("/일기",)
 
 CLAUDE_MODEL = "claude-opus-4-6"
 FEEDBACK_MAX_TOKENS = 16000
@@ -776,7 +780,13 @@ def _classify_text(text: str) -> tuple[str, str | None]:
             return ("setting", payload) if payload else ("ignore", None)
     if stripped in SETTING_BARE:
         return ("ignore", None)
-    return ("comment", text)
+    for prefix in DIARY_PREFIXES:
+        if stripped.startswith(prefix):
+            payload = stripped[len(prefix):].strip()
+            return ("diary", payload) if payload else ("ignore", None)
+    if stripped in DIARY_BARE:
+        return ("ignore", None)
+    return ("chat", text)
 
 
 def _send_pending_date_prompt(chat_id: int, today: str, user_text: str):
@@ -937,6 +947,25 @@ def _handle_text_message(message: dict):
         return
 
     today = datetime.now(KST).strftime("%Y-%m-%d")
+
+    # prefix 없는 일반 텍스트: 일기 저장 없이 대화만 (오늘 일기가 있으면 읽기 전용 컨텍스트로 활용)
+    if kind == "chat":
+        context = ""
+        try:
+            page_id = _find_today_page_id(client, db_id, today)
+            if page_id:
+                context = _read_discussion(client, page_id)
+        except Exception as e:
+            print(f"[webhook] 대화 컨텍스트 조회 실패(무시): {e}")
+        try:
+            reply = _generate_reply(f"{context}\n• 나: {payload}".strip())
+            _send_message(chat_id, reply)
+        except Exception as e:
+            print(f"[webhook] 대화 응답 생성 실패: {e}")
+            _send_message(chat_id, "응답 생성 중 문제가 생겼어.")
+        return
+
+    # kind == "diary": /일기 prefix — 오늘 일기에 저장, 오늘 일기가 없으면 날짜 질문
     try:
         page_id = _find_today_page_id(client, db_id, today)
         if not page_id:

@@ -9,11 +9,13 @@ import caldav
 CALDAV_URL = "https://caldav.icloud.com"
 
 
-def collect_calendar(period_days: int) -> list[dict]:
+def collect_calendar(period_days: int, anchor: datetime | None = None) -> list[dict]:
     """iCloud CalDAV를 통해 Apple Calendar에서 최근 일정을 수집한다.
 
     Args:
         period_days: 수집할 기간 (일 단위)
+        anchor: "오늘"의 기준 시각 (기본: 현재 KST). cron 지연으로 자정을 넘겨
+            실행돼도 의도한 날짜의 일정을 수집할 수 있도록 호출부에서 보정해 전달.
 
     Returns:
         [{"summary": str, "description": str, "start": str, "end": str}, ...]
@@ -38,7 +40,7 @@ def collect_calendar(period_days: int) -> list[dict]:
         return []
 
     KST = timezone(timedelta(hours=9))
-    now_kst = datetime.now(KST)
+    now_kst = anchor if anchor is not None else datetime.now(KST)
     today_date = now_kst.date()
     start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)

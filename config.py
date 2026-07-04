@@ -20,4 +20,6 @@ TELEGRAM_REPLY_TIMEOUT = 300  # 5분
 MODEL_PRICING = {
     "claude-opus-4-6": {"input": 15.0, "output": 75.0},
     "claude-sonnet-4-5-20250929": {"input": 3.0, "output": 15.0},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.50},  # Claude 장애 시 폴백
 }

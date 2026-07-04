@@ -1,10 +1,13 @@
-"""Claude API를 사용하여 오늘 한 일 3가지를 요약하는 모듈"""
+"""Claude API를 사용하여 오늘 한 일 3가지를 요약하는 모듈
+
+Claude 호출은 src/llm.py 래퍼를 통한다 (SDK 2회 재시도 + Gemini 폴백).
+"""
 
 import json
 import os
 import re
 
-import anthropic
+from src import llm
 
 
 SYSTEM_PROMPT = """당신은 사용자의 하루를 정리해주는 긍정적이고 합리적인 일기 도우미입니다.
@@ -53,11 +56,9 @@ def generate_summary(
     Returns:
         (요약 텍스트, {"input_tokens": int, "output_tokens": int})
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+        raise ValueError("ANTHROPIC_API_KEY(또는 폴백용 GEMINI_API_KEY)가 설정되지 않았습니다.")
 
-    client = anthropic.Anthropic(api_key=api_key)
     user_prompt = _build_user_prompt(calendar_data, notion_data, github_data or [], completed_today or [])
 
     system_prompt = SYSTEM_PROMPT
@@ -68,18 +69,9 @@ def generate_summary(
 
     print(f"[Summarizer] Claude API 호출 중 (모델: {model})...")
 
-    message = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_prompt}],
+    result, usage = llm.generate(
+        user_prompt, model=model, max_tokens=max_tokens, system=system_prompt,
     )
-
-    result = message.content[0].text
-    usage = {
-        "input_tokens": message.usage.input_tokens,
-        "output_tokens": message.usage.output_tokens,
-    }
     print(f"[Summarizer] 요약 완료 ({len(result)}자, 입력 {usage['input_tokens']}토큰, 출력 {usage['output_tokens']}토큰)")
     return result, usage
 
@@ -108,28 +100,19 @@ def dedupe_tasks(items: list[str], model: str) -> tuple[list[str], dict]:
     if len(items) < 2:
         return items, empty_usage
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
+    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
         print("[Dedupe] ANTHROPIC_API_KEY 미설정, 원본 반환")
         return items, empty_usage
 
     user_prompt = "입력 todo 리스트:\n" + "\n".join(f"- {t}" for t in items)
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model=model,
-            max_tokens=1000,
-            system=DEDUPE_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
+        text, usage = llm.generate(
+            user_prompt, model=model, max_tokens=1000, system=DEDUPE_SYSTEM_PROMPT,
         )
-        text = message.content[0].text.strip()
-        usage = {
-            "input_tokens": message.usage.input_tokens,
-            "output_tokens": message.usage.output_tokens,
-        }
+        text = text.strip()
     except Exception as e:
-        print(f"[Dedupe] Claude 호출 실패: {e}, 원본 반환")
+        print(f"[Dedupe] LLM 호출 실패: {e}, 원본 반환")
         return items, empty_usage
 
     # 응답에서 JSON 배열만 추출 (혹시 텍스트가 섞여도)
