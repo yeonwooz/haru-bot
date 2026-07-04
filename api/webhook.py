@@ -29,11 +29,18 @@ from notion_client import Client
 
 KST = timezone(timedelta(hours=9))
 SETTING_PREFIXES = ("/설정 ", "/set ")
-SETTING_BARE = ("/설정", "/set")
 # "/일기 내용" 형태만 일기에 저장 (없는 날짜면 어느 일기인지 질문).
 # prefix 없는 일반 텍스트는 저장하지 않고 클로드와 대화만 한다 (2026-07-04 변경).
 DIARY_PREFIXES = ("/일기 ",)
-DIARY_BARE = ("/일기",)
+
+# "/"로 시작하는데 위 명령이 아니거나 내용 없이 명령만 보낸 경우 안내
+HELP_TEXT = (
+    "사용법:\n"
+    "/일기 <내용> : 일기에 저장 (오늘 일기가 없으면 어느 날짜인지 물어봐요)\n"
+    "/설정 <규칙> : 하루 요약에 반영할 규칙 저장 (/set 도 가능)\n"
+    "그냥 텍스트 : 저장하지 않고 클로드와 대화\n"
+    "사진 : 오늘 일기에 첨부"
+)
 
 CLAUDE_MODEL = "claude-opus-4-6"
 FEEDBACK_MAX_TOKENS = 16000
@@ -777,15 +784,14 @@ def _classify_text(text: str) -> tuple[str, str | None]:
     for prefix in SETTING_PREFIXES:
         if stripped.startswith(prefix):
             payload = stripped[len(prefix):].strip()
-            return ("setting", payload) if payload else ("ignore", None)
-    if stripped in SETTING_BARE:
-        return ("ignore", None)
+            return ("setting", payload) if payload else ("help", None)
     for prefix in DIARY_PREFIXES:
         if stripped.startswith(prefix):
             payload = stripped[len(prefix):].strip()
-            return ("diary", payload) if payload else ("ignore", None)
-    if stripped in DIARY_BARE:
-        return ("ignore", None)
+            return ("diary", payload) if payload else ("help", None)
+    # "/", "/일기"(내용 없음), 모르는 "/명령" 전부 → 사용법 안내
+    if stripped.startswith("/"):
+        return ("help", None)
     return ("chat", text)
 
 
@@ -929,6 +935,9 @@ def _handle_text_message(message: dict):
 
     kind, payload = _classify_text(text)
     if kind == "ignore":
+        return
+    if kind == "help":
+        _send_message(chat_id, HELP_TEXT)
         return
 
     client, db_id = _notion_client_and_db()

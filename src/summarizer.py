@@ -5,7 +5,6 @@ Claude 호출은 src/llm.py 래퍼를 통한다 (SDK 2회 재시도 + Gemini 폴
 
 import json
 import os
-import re
 
 from src import llm
 
@@ -84,10 +83,16 @@ DEDUPE_SYSTEM_PROMPT = """사용자의 오늘 미완료 todo 리스트에서 의
 - 구체 대상이 다르면 별개 ("PR 리뷰" ≠ "리뷰: feat/foo")
 - 의심스러우면 별개로 둠 (false-positive 병합이 누락보다 나쁨)
 
-대표는 입력 문구 중 하나를 그대로 선택한다. 재작성·요약하지 않는다.
+응답의 keep 배열에는 남길 항목의 번호(정수)만 넣는다:
+- 중복 그룹마다 대표 하나의 번호만 포함
+- 중복이 아닌 항목의 번호는 전부 포함"""
 
-출력은 JSON 배열 하나만. 다른 텍스트·코드펜스·설명 금지.
-예) ["회의 준비", "PR 리뷰"]"""
+DEDUPE_SCHEMA = {
+    "type": "object",
+    "properties": {"keep": {"type": "array", "items": {"type": "integer"}}},
+    "required": ["keep"],
+    "additionalProperties": False,
+}
 
 
 def dedupe_tasks(items: list[str], model: str) -> tuple[list[str], dict]:
@@ -104,43 +109,29 @@ def dedupe_tasks(items: list[str], model: str) -> tuple[list[str], dict]:
         print("[Dedupe] ANTHROPIC_API_KEY 미설정, 원본 반환")
         return items, empty_usage
 
-    user_prompt = "입력 todo 리스트:\n" + "\n".join(f"- {t}" for t in items)
+    # 인덱스 방식: 모델이 번호만 고르므로 재작성/공백 변형이 원천 불가능하고,
+    # 스키마 강제 출력이라 JSON 파싱 실패도 없음 (2026-07-04, 자유 JSON echo에서 전환)
+    user_prompt = "입력 todo 리스트 (번호: 항목):\n" + "\n".join(
+        f"{i}: {t}" for i, t in enumerate(items)
+    )
 
     try:
         text, usage = llm.generate(
-            user_prompt, model=model, max_tokens=1000, system=DEDUPE_SYSTEM_PROMPT,
+            user_prompt, model=model, max_tokens=1000,
+            system=DEDUPE_SYSTEM_PROMPT, schema=DEDUPE_SCHEMA,
         )
-        text = text.strip()
+        keep = json.loads(text)["keep"]
     except Exception as e:
         print(f"[Dedupe] LLM 호출 실패: {e}, 원본 반환")
         return items, empty_usage
 
-    # 응답에서 JSON 배열만 추출 (혹시 텍스트가 섞여도)
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if not match:
-        print(f"[Dedupe] JSON 배열 못 찾음, 원본 반환: {text[:100]!r}")
+    kept_idx = {i for i in keep if isinstance(i, int) and 0 <= i < len(items)}
+    if not kept_idx:
+        print("[Dedupe] 유효한 keep 번호 없음, 원본 반환")
         return items, usage
 
-    try:
-        kept = json.loads(match.group(0))
-    except json.JSONDecodeError as e:
-        print(f"[Dedupe] JSON 파싱 실패: {e}, 원본 반환")
-        return items, usage
-
-    if not isinstance(kept, list) or not all(isinstance(x, str) for x in kept):
-        print(f"[Dedupe] 응답이 str 배열이 아님, 원본 반환")
-        return items, usage
-
-    # 안전장치: kept는 입력의 부분집합이어야 함 (Claude가 재작성하면 거부)
-    items_set = set(items)
-    if not all(x in items_set for x in kept):
-        unknown = [x for x in kept if x not in items_set]
-        print(f"[Dedupe] 응답에 입력 외 항목 포함, 원본 반환: {unknown[:3]}")
-        return items, usage
-
-    # 입력 순서 유지하면서 kept에 있는 것만 남김
-    kept_set = set(kept)
-    result = [x for x in items if x in kept_set]
+    # 입력 순서 유지하면서 keep된 번호만 남김
+    result = [t for i, t in enumerate(items) if i in kept_idx]
     removed = len(items) - len(result)
     if removed > 0:
         print(f"[Dedupe] {removed}개 의미 중복 제거 ({len(items)}→{len(result)})")
