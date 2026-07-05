@@ -158,8 +158,13 @@ def collect_today_daily_todo_page(today: datetime) -> tuple[list[str], list[str]
     return uncompleted, completed
 
 
-def collect_today_daily_todo_by_category(today: datetime) -> dict[str, list[tuple[str, bool]]]:
+def collect_today_daily_todo_by_category(
+    today: datetime, page_id: str | None = None
+) -> dict[str, list[tuple[str, bool]]]:
     """`YYYY-MM-DD TODO` 페이지를 카테고리(heading_2)별로 묶어 to-do를 수집한다.
+
+    page_id를 넘기면 검색을 생략하고 그 페이지를 바로 읽는다.
+    (search API는 인덱싱 지연이 있어 방금 생성한 페이지는 검색에 안 잡힘)
 
     Returns:
         {"업무": [("task", checked), ...], "개인": [...], ...}
@@ -172,7 +177,8 @@ def collect_today_daily_todo_by_category(today: datetime) -> dict[str, list[tupl
     client = Client(auth=token)
 
     title_query = today.strftime("%Y-%m-%d") + " TODO"
-    page_id = _find_page_by_title(client, title_query)
+    if not page_id:
+        page_id = _find_page_by_title(client, title_query)
     if not page_id:
         print(f"[Notion-Daily] '{title_query}' 페이지를 찾지 못함")
         return {}

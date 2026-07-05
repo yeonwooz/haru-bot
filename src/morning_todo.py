@@ -40,13 +40,19 @@ def _format_message(today: str, by_category: dict[str, list[tuple[str, bool]]]) 
     return "\n".join(lines)
 
 
-def run() -> None:
+def run(page_id: str | None = None) -> None:
+    """page_id가 주어지면 검색 없이 그 페이지를 읽는다.
+
+    daily_todo.py가 페이지 생성 직후 호출할 때는 반드시 page_id를 넘겨야 한다 —
+    search API 인덱싱 지연으로 방금 만든 페이지가 검색에 안 잡혀
+    '할 일 없음' 알림이 나가는 사고가 있었음 (2026-07-05).
+    """
     load_dotenv()
     now = datetime.now(KST)
     today = now.strftime("%Y-%m-%d")
 
     print(f"=== 아침 todo 알림 ({today}) ===")
-    by_category = collect_today_daily_todo_by_category(now)
+    by_category = collect_today_daily_todo_by_category(now, page_id=page_id)
     message = _format_message(today, by_category)
     print(message)
 

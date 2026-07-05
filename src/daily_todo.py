@@ -662,8 +662,9 @@ def main(dry_run: bool = False):
     print(f"[{today_str} TODO] 생성 완료: {result.get('url', '')}")
 
     # 페이지 생성 직후 아침 알림까지 바로 발송 (구 morning-todo.yml 워크플로우 통합)
+    # page_id를 직접 넘긴다 — search API는 방금 생성한 페이지를 못 찾음
     from src.morning_todo import run as send_morning_notification
-    send_morning_notification()
+    send_morning_notification(page_id=result["id"])
 
 
 if __name__ == "__main__":
