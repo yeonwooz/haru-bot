@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/webhook.py": {
-      "runtime": "@vercel/python@4.4.0"
+      "maxDuration": 10
     }
   }
 }
