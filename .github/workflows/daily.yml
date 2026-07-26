@@ -38,5 +38,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add usage_log.csv
-          git diff --cached --quiet || git commit -m "diary: $(date +%Y-%m-%d) 사용량 기록"
+          # [skip ci] — 코드 변경이 없는 데이터 커밋이라 Vercel 재배포를 건너뛴다
+          git diff --cached --quiet || git commit -m "diary: $(date +%Y-%m-%d) 사용량 기록 [skip ci]"
           git push
