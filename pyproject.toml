@@ -11,3 +11,10 @@ dependencies = [
     "python-telegram-bot>=21.0",
     "vobject>=0.9.6",
 ]
+
+# @vercel/python 6.x는 src/·api/에서 main.py·app.py 등을 훑어 엔트리포인트를
+# 자동 탐지한다. GitHub Actions 전용 스크립트인 src/main.py를 먼저 집어들어
+# "does not export a top-level app/application/handler"로 빌드가 실패하므로
+# 실제 서버리스 함수를 명시한다.
+[tool.vercel]
+entrypoint = "api.webhook:handler"
