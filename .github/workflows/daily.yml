@@ -1,10 +1,13 @@
 name: 하루봇 daily run
 
 on:
+  # 주 트리거는 Vercel Cron → api/cron.py → 이 workflow_dispatch (21:00~21:59 KST).
+  # 아래 schedule은 백업이다. GitHub schedule 단독으로는 큐 지연이 중앙값 5h50m,
+  # 최대 10h07m까지 벌어져 새벽에 돌지만, Vercel이 죽어도 하루를 통째로 놓치진 않는다.
+  # 같은 날 둘 다 발화하면 먼저 온 쪽이 이기고 나머지는 src/main.py의 _already_ran이 건너뛴다.
   schedule:
-    # 매일 밤 9시 KST = UTC 12:00
-    - cron: '0 12 * * *'
-  workflow_dispatch: # 수동 실행
+    - cron: '0 12 * * *' # 21:00 KST
+  workflow_dispatch: # Vercel Cron + 수동 실행
 
 permissions:
   contents: write

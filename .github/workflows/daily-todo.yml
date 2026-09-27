@@ -1,10 +1,12 @@
 name: 하루봇 daily todo 생성 + 아침 알림
 
 on:
+  # 주 트리거는 Vercel Cron → api/cron.py → 이 workflow_dispatch (06:00~06:59 KST).
+  # schedule은 백업 (단독 지연 중앙값 2h00m). 중복은 src/daily_todo.py가 그날 TODO
+  # 페이지 존재 여부로 건너뛴다.
   schedule:
-    # 매일 오전 6시 KST = UTC 21:00 (전날)
-    - cron: '0 21 * * *'
-  workflow_dispatch: # 수동 실행
+    - cron: '0 21 * * *' # 06:00 KST (전날 21:00 UTC)
+  workflow_dispatch: # Vercel Cron + 수동 실행
 
 jobs:
   create-and-notify:

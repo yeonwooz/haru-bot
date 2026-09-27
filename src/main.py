@@ -50,6 +50,28 @@ def _calc_cost(usage: dict, model: str) -> float:
     return input_cost + output_cost
 
 
+def _already_ran(run_date: str) -> bool:
+    """usage_log.csv에 run_date의 bot 실행 기록이 있으면 True.
+
+    트리거가 둘이다 — Vercel Cron(주 트리거, 정시)과 GitHub schedule(백업, 수 시간 지연).
+    Vercel Cron 자체도 공식적으로 중복 전달될 수 있다. 먼저 도착한 실행이 이기고
+    나머지는 아무 side effect 없이 종료한다 (Telegram/Notion 중복 방지).
+
+    키는 usage_log.csv의 date 컬럼 = _resolve_anchor가 정한 예약일(KST 21시 기준)이라,
+    새벽 2시에 도착한 지연 실행도 전날로 묶여 같은 키가 된다.
+    """
+    if not os.path.exists(USAGE_LOG_PATH):
+        return False
+    try:
+        with open(USAGE_LOG_PATH, newline="", encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if len(row) >= 7 and row[0] == run_date and row[6] == "bot":
+                    return True
+    except OSError as e:
+        print(f"[Skip] usage_log 읽기 실패({e}) — 중복 검사 생략하고 진행")
+    return False
+
+
 def _log_usage(run_date: str, duration_sec: float, usage: dict, model: str, note: str = ""):
     """실행 기록을 CSV에 누적 저장한다."""
     cost = _calc_cost(usage, model)
@@ -122,6 +144,11 @@ def run(date_arg: str | None = None):
     today = anchor.strftime("%Y-%m-%d")
 
     print(f"=== 하루봇 실행 ({today}) ===\n")
+
+    # --date 백필은 명시적 의도이므로 가드를 적용하지 않는다.
+    if not date_arg and _already_ran(today):
+        print(f"[Skip] {today} 실행 기록이 이미 있음 — 중복 트리거로 보고 종료")
+        return
 
     # 0. Notion DB 컬럼 확보 (setting 컬럼은 별도 설정 페이지로 이전됨)
     ensure_tasks_column()

@@ -2,7 +2,20 @@
   "functions": {
     "api/webhook.py": {
       "maxDuration": 10
+    },
+    "api/cron.py": {
+      "maxDuration": 10
     }
   },
-  "ignoreCommand": "git diff HEAD^ HEAD --quiet -- api vercel.json requirements.txt pyproject.toml uv.lock .python-version"
+  "ignoreCommand": "git diff HEAD^ HEAD --quiet -- api vercel.json requirements.txt pyproject.toml uv.lock .python-version",
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/cron",
+      "schedule": "0 21 * * *"
+    }
+  ]
 }

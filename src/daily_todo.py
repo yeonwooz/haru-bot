@@ -619,6 +619,14 @@ def main(dry_run: bool = False):
     current_month = now.strftime("%Y-%m")
     current_year = now.strftime("%Y")
 
+    # 트리거가 둘(Vercel Cron + GitHub schedule 백업)이라 같은 날 두 번 들어올 수 있다.
+    # 그날 TODO 페이지가 이미 있으면 중복 생성·중복 아침알림 없이 종료한다.
+    # (Notion search는 인덱싱 지연이 있어 수 초 내 연속 실행은 못 걸러낸다 — 트리거 간격이
+    #  시간 단위라 실질적으로 문제되지 않는다)
+    if not dry_run and find_page_by_title(f"{today_str} TODO"):
+        print(f"[Skip] '{today_str} TODO' 페이지가 이미 있음 — 중복 트리거로 보고 종료")
+        return
+
     print(f"{current_year} 할일 페이지 확보 중...")
     year_page_id = ensure_year_page(current_year, ROOT_PAGE_ID)
 
