@@ -32,7 +32,7 @@ from src.collectors import (
     collect_github,
 )
 from src.summarizer import generate_summary, dedupe_tasks, split_ambiguous_calendar
-from src.telegram_bot import send_summary, send_task_keyboard, send_ambiguous_item_question
+from src.telegram_bot import send_daily_digest, send_ambiguous_item_question
 from src.diary_store import (
     save_diary,
     load_settings,
@@ -190,14 +190,13 @@ def run(date_arg: str | None = None):
 
     # 4. Telegram 전송
     print("--- 4단계: Telegram 전송 ---")
-    if calendar_data:
-        send_summary(summary)
-    else:
-        print("[Telegram] 캘린더 일정 0개 - 일정 요약 메시지 생략")
-    if page_id and uncompleted_tasks:
-        send_task_keyboard(page_id, uncompleted_tasks)
-    elif not uncompleted_tasks:
-        print("[Telegram] 미완료 태스크 없음 - 태스크 키보드 생략")
+    # 요약 + 태스크 키보드를 한 메시지로 보낸다 (알림 개수 최소화).
+    # 캘린더 일정이 0개면 요약은 싣지 않는다 (기존 동작 유지).
+    send_daily_digest(
+        page_id,
+        summary if calendar_data else None,
+        uncompleted_tasks,
+    )
     if page_id:
         for item in ambiguous_calendar:
             send_ambiguous_item_question(page_id, item["summary"])

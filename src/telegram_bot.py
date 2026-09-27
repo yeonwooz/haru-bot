@@ -30,8 +30,20 @@ def send_message(text: str) -> bool:
         return False
 
 
-def send_summary(schedule_text: str) -> bool:
-    """오늘의 일정 요약을 Telegram으로 전송한다."""
+def send_daily_digest(page_id: str | None, summary: str | None, tasks: list[str]) -> bool:
+    """하루 정리 요약 + 태스크 토글 키보드를 '한 메시지'로 전송한다.
+
+    알림 개수를 하루 1개로 줄이기 위해 기존 send_summary + send_task_keyboard를 합친 것이다.
+    본문과 키보드를 한 메시지에 담아도 안전한 이유: 콜백 핸들러
+    (api/webhook.py의 _handle_toggle, _handle_done)가 editMessageReplyMarkup만 쓰고
+    본문 텍스트는 건드리지 않는다. 본문을 교체하는 핸들러를 새로 만들면 이 전제가 깨진다.
+
+    콜백 데이터 형식 (send_task_keyboard에서 그대로 승계):
+    - 토글: t:{page_id_short}:{index}
+    - 완료: done:{page_id_short}
+
+    요약만 있거나 태스크만 있는 날도 메시지는 1개다. 둘 다 없으면 보내지 않는다.
+    """
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -39,18 +51,46 @@ def send_summary(schedule_text: str) -> bool:
         print("[Telegram] TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID가 설정되지 않음 - 건너뜀")
         return False
 
-    message = f"오늘 하루 정리\n{'=' * 20}\n\n{schedule_text}".rstrip()
+    # 키보드는 콜백에 page_id가 필요하다. page_id가 없으면 요약만 보낸다.
+    show_tasks = bool(page_id and tasks)
+
+    sections = []
+    if summary:
+        sections.append(f"오늘 하루 정리\n{'=' * 20}\n\n{summary}".rstrip())
+    if show_tasks:
+        sections.append("오늘 한 태스크를 체크해주세요. 다 끝나면 🏁 완료를 눌러주세요.")
+
+    if not sections:
+        print("[Telegram] 요약도 태스크도 없음 - 전송 생략")
+        return False
+
+    message = "\n\n".join(sections)
+
+    markup = None
+    if show_tasks:
+        pid = _short_pid(page_id)
+        keyboard: list[list[InlineKeyboardButton]] = []
+        for i, t in enumerate(tasks):
+            label = t[:40] + "..." if len(t) > 40 else t
+            keyboard.append([
+                InlineKeyboardButton(f"☐ {label}", callback_data=f"t:{pid}:{i}"),
+            ])
+        keyboard.append([InlineKeyboardButton("🏁 완료", callback_data=f"done:{pid}")])
+        markup = InlineKeyboardMarkup(keyboard)
 
     async def _send():
         bot = Bot(token=token)
-        await bot.send_message(chat_id=chat_id, text=message)
+        await bot.send_message(chat_id=chat_id, text=message, reply_markup=markup)
 
     try:
         asyncio.run(_send())
-        print("[Telegram] 일정 요약 전송 완료")
+        print(
+            f"[Telegram] 하루 정리 전송 완료 "
+            f"(요약 {'O' if summary else 'X'}, 태스크 {len(tasks) if show_tasks else 0}개)"
+        )
         return True
     except Exception as e:
-        print(f"[Telegram] 전송 실패: {e}")
+        print(f"[Telegram] 하루 정리 전송 실패: {e}")
         return False
 
 
@@ -89,44 +129,4 @@ def send_ambiguous_item_question(page_id: str, item: str) -> bool:
         return True
     except Exception as e:
         print(f"[Telegram] 애매한 항목 질문 전송 실패: {e}")
-        return False
-
-
-def send_task_keyboard(page_id: str, tasks: list[str]) -> bool:
-    """태스크 토글 버튼 + 🏁 완료 버튼 메시지를 전송한다.
-
-    콜백 데이터 형식:
-    - 토글: t:{page_id_short}:{index}
-    - 완료: done:{page_id_short}
-    """
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id or not tasks:
-        return False
-
-    pid = _short_pid(page_id)
-    keyboard: list[list[InlineKeyboardButton]] = []
-    for i, t in enumerate(tasks):
-        label = t[:40] + "..." if len(t) > 40 else t
-        keyboard.append([
-            InlineKeyboardButton(f"☐ {label}", callback_data=f"t:{pid}:{i}"),
-        ])
-    keyboard.append([InlineKeyboardButton("🏁 완료", callback_data=f"done:{pid}")])
-
-    text = "오늘 한 태스크를 체크해주세요. 다 끝나면 🏁 완료를 눌러주세요."
-
-    async def _send():
-        bot = Bot(token=token)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-
-    try:
-        asyncio.run(_send())
-        print(f"[Telegram] 태스크 키보드 전송 완료 ({len(tasks)}개 항목)")
-        return True
-    except Exception as e:
-        print(f"[Telegram] 태스크 키보드 전송 실패: {e}")
         return False
