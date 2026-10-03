@@ -53,9 +53,10 @@ def _calc_cost(usage: dict, model: str) -> float:
 def _already_ran(run_date: str) -> bool:
     """usage_log.csv에 run_date의 bot 실행 기록이 있으면 True.
 
-    트리거가 둘이다 — Vercel Cron(주 트리거, 정시)과 GitHub schedule(백업, 수 시간 지연).
-    Vercel Cron 자체도 공식적으로 중복 전달될 수 있다. 먼저 도착한 실행이 이기고
-    나머지는 아무 side effect 없이 종료한다 (Telegram/Notion 중복 방지).
+Vercel Cron이 같은 작업을 여러 번 트리거할 수 있다 — 놓쳤을 때를 대비한 재시도
+    크론이 있고, Vercel 문서상 크론 전달 자체도 중복될 수 있다. 먼저 도착한 실행이
+    이기고 나머지는 아무 side effect 없이 종료한다 (Telegram/Notion 중복 방지).
+    api/webhook.py의 _recent_success가 1차로 걸러내고, 이 가드가 최종 방어선이다.
 
     키는 usage_log.csv의 date 컬럼 = _resolve_anchor가 정한 예약일(KST 21시 기준)이라,
     새벽 2시에 도착한 지연 실행도 전날로 묶여 같은 키가 된다.

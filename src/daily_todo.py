@@ -619,7 +619,7 @@ def main(dry_run: bool = False):
     current_month = now.strftime("%Y-%m")
     current_year = now.strftime("%Y")
 
-    # 트리거가 둘(Vercel Cron + GitHub schedule 백업)이라 같은 날 두 번 들어올 수 있다.
+    # 재시도 크론·중복 전달로 같은 날 두 번 들어올 수 있다.
     # 그날 TODO 페이지가 이미 있으면 중복 생성·중복 아침알림 없이 종료한다.
     # (Notion search는 인덱싱 지연이 있어 수 초 내 연속 실행은 못 걸러낸다 — 트리거 간격이
     #  시간 단위라 실질적으로 문제되지 않는다)

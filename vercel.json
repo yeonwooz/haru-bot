@@ -12,7 +12,19 @@
     },
     {
       "path": "/api/cron",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/cron",
+      "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/cron",
       "schedule": "0 21 * * *"
+    },
+    {
+      "path": "/api/cron",
+      "schedule": "0 22 * * *"
     }
   ]
 }

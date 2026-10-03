@@ -1109,18 +1109,70 @@ def _handle_video_message(message: dict):
 #
 # 왜 Vercel Cron인가: GitHub schedule 트리거의 큐 지연이 중앙값 5h50m, 최대
 # 10h07m까지 벌어져 21:00 KST 작업이 매일 새벽에 돌았다. 스케줄링만 옮기고 실제
-# 작업은 그대로 Actions에서 돈다. 워크플로의 schedule은 백업으로 남겨뒀고, 같은 날
-# 중복 실행은 src/main.py의 _already_ran과 src/daily_todo.py가 건너뛴다.
+# 작업은 그대로 Actions에서 돈다. 워크플로의 schedule 트리거는 제거했다 —
+# 몇 시간 늦게 도착해서 엉뚱한 시간에 알림을 보내는 쪽이 아예 안 오는 것보다 싫다는
+# 판단. 대신 놓쳤을 때를 같은 시간대 안의 재시도로 메운다 (아래).
 CRON_PATH = "/api/cron"
 GITHUB_REPO = "yeonwooz/haru-bot"
 GITHUB_REF = "master"
 
+# 이미 성공한 실행이 이 시간 안에 있으면 재시도 크론은 dispatch하지 않는다.
+# 재시도 창(저녁 3시간, 아침 2시간)보다 넉넉하고 24시간보다는 훨씬 짧아야 한다 —
+# 길면 다음 날 정규 실행까지 막아버린다.
+RECENT_SUCCESS_WINDOW_SEC = 6 * 3600
+
 # vercel.json의 crons[].schedule → 트리거할 워크플로 (UTC 기준).
 # 키는 vercel.json과 문자 단위로 같아야 한다.
+#
+# Hobby 플랜은 각 표현식이 하루 1회여야 하고 지정한 시(hour) 내 임의 시점에 발화한다.
+# 그래서 "재시도"를 시간대를 달리한 일일 크론 여러 개로 구현한다. 첫 시도가 성공하면
+# 뒤 시도는 _recent_success에서 걸러져 dispatch조차 하지 않는다.
 SCHEDULE_TO_WORKFLOW = {
-    "0 12 * * *": "daily.yml",  # 21:00 KST — 하루 정리
-    "0 21 * * *": "daily-todo.yml",  # 06:00 KST (다음날) — 아침 TODO
+    # 하루 정리 — 21시대 정규, 못 보내면 22시대·23시대 재시도 (자정 전에 끝난다)
+    "0 12 * * *": "daily.yml",
+    "0 13 * * *": "daily.yml",
+    "0 14 * * *": "daily.yml",
+    # 아침 TODO — 6시대 정규, 못 보내면 7시대 재시도
+    "0 21 * * *": "daily-todo.yml",
+    "0 22 * * *": "daily-todo.yml",
 }
+
+
+def _recent_success(workflow: str) -> bool:
+    """workflow가 RECENT_SUCCESS_WINDOW_SEC 안에 성공한 적이 있으면 True.
+
+    재시도 크론이 불필요하게 Actions run을 만들지 않게 하는 사전 체크다.
+    실패한 실행은 성공으로 치지 않으므로, 중간에 깨진 날은 재시도가 제대로 돈다.
+    조회 자체가 실패하면 False를 돌려 dispatch를 막지 않는다 — 안 보내는 것보다
+    중복이 낫고, 중복은 src/main.py의 _already_ran이 최종적으로 막는다.
+    """
+    token = os.environ.get("GH_DISPATCH_TOKEN")
+    if not token:
+        return False
+    try:
+        req = Request(
+            f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{workflow}"
+            "/runs?status=success&per_page=1",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "haru-bot-cron",
+            },
+        )
+        with urlopen(req, timeout=8) as res:
+            runs = json.loads(res.read()).get("workflow_runs", [])
+        if not runs:
+            return False
+        created = datetime.strptime(runs[0]["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+        age = (datetime.now(timezone.utc).replace(tzinfo=None) - created).total_seconds()
+        if age < RECENT_SUCCESS_WINDOW_SEC:
+            print(f"[cron] {workflow} {int(age // 60)}분 전 성공 — dispatch 생략")
+            return True
+        return False
+    except Exception as e:
+        print(f"[cron] {workflow} 최근 실행 조회 실패({type(e).__name__}: {e}) — dispatch 진행")
+        return False
 
 
 def _dispatch_workflow(workflow: str):
@@ -1171,6 +1223,10 @@ class handler(BaseHTTPRequestHandler):
             # vercel.json의 스케줄을 바꿨는데 위 맵을 안 고친 경우. 조용히 죽지 않게 로그를 남긴다.
             print(f"[cron] 알 수 없는 스케줄: {schedule!r} — SCHEDULE_TO_WORKFLOW 확인 필요")
             self._json(400, {"ok": False, "error": "unknown schedule", "schedule": schedule})
+            return
+
+        if _recent_success(workflow):
+            self._json(200, {"ok": True, "workflow": workflow, "skipped": "recent success"})
             return
 
         try:
