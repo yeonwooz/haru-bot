@@ -16,6 +16,7 @@
 Notion 데이터 모델은 src/diary_store.py docstring 참조 (discussion 단일 컬럼).
 """
 
+import hmac
 import json
 import os
 import re
@@ -1099,7 +1100,100 @@ def _handle_video_message(message: dict):
 
 # --- HTTP handler ---
 
+# ---------------------------------------------------------------------------
+# Vercel Cron → GitHub Actions workflow_dispatch 트리거
+#
+# pyproject.toml의 [tool.vercel] entrypoint가 이 파일 하나를 지정하므로 모든 경로가
+# 이 핸들러로 들어온다. 크론용 함수를 api/cron.py로 분리했다가 모든 GET이 501
+# (Unsupported method)로 떨어졌다 — 그 파일은 서빙되지 않는다. 경로로 분기한다.
+#
+# 왜 Vercel Cron인가: GitHub schedule 트리거의 큐 지연이 중앙값 5h50m, 최대
+# 10h07m까지 벌어져 21:00 KST 작업이 매일 새벽에 돌았다. 스케줄링만 옮기고 실제
+# 작업은 그대로 Actions에서 돈다. 워크플로의 schedule은 백업으로 남겨뒀고, 같은 날
+# 중복 실행은 src/main.py의 _already_ran과 src/daily_todo.py가 건너뛴다.
+CRON_PATH = "/api/cron"
+GITHUB_REPO = "yeonwooz/haru-bot"
+GITHUB_REF = "master"
+
+# vercel.json의 crons[].schedule → 트리거할 워크플로 (UTC 기준).
+# 키는 vercel.json과 문자 단위로 같아야 한다.
+SCHEDULE_TO_WORKFLOW = {
+    "0 12 * * *": "daily.yml",  # 21:00 KST — 하루 정리
+    "0 21 * * *": "daily-todo.yml",  # 06:00 KST (다음날) — 아침 TODO
+}
+
+
+def _dispatch_workflow(workflow: str):
+    """GitHub workflow_dispatch 호출. 성공 시 204, 실패 시 예외."""
+    token = os.environ.get("GH_DISPATCH_TOKEN")
+    if not token:
+        raise RuntimeError("GH_DISPATCH_TOKEN 미설정")
+
+    req = Request(
+        f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{workflow}/dispatches",
+        data=json.dumps({"ref": GITHUB_REF}).encode(),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+            "User-Agent": "haru-bot-cron",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=10) as res:
+        print(f"[cron] {workflow} dispatch 완료 (HTTP {res.status})")
+
+
 class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Vercel Cron 전용 경로. 그 외 GET은 404.
+
+        Vercel은 크론을 GET으로 호출하고, 어느 스케줄이 트리거했는지를
+        x-vercel-cron-schedule 헤더(cron 표현식 원문)로 알려준다.
+        인증은 CRON_SECRET — Vercel이 Authorization: Bearer로 자동 전송한다.
+        """
+        path = self.path.split("?")[0].rstrip("/") or "/"
+        if path != CRON_PATH:
+            self._json(404, {"ok": False, "error": "not found"})
+            return
+
+        secret = os.environ.get("CRON_SECRET")
+        auth = self.headers.get("Authorization", "")
+        if not secret or not hmac.compare_digest(auth, f"Bearer {secret}"):
+            print("[cron] 인증 실패 — CRON_SECRET 미설정이거나 헤더 불일치")
+            self._json(401, {"ok": False, "error": "unauthorized"})
+            return
+
+        schedule = self.headers.get("x-vercel-cron-schedule", "")
+        workflow = SCHEDULE_TO_WORKFLOW.get(schedule)
+        if not workflow:
+            # vercel.json의 스케줄을 바꿨는데 위 맵을 안 고친 경우. 조용히 죽지 않게 로그를 남긴다.
+            print(f"[cron] 알 수 없는 스케줄: {schedule!r} — SCHEDULE_TO_WORKFLOW 확인 필요")
+            self._json(400, {"ok": False, "error": "unknown schedule", "schedule": schedule})
+            return
+
+        try:
+            _dispatch_workflow(workflow)
+        except HTTPError as e:
+            # 401/403이면 PAT 만료·권한 부족, 404면 워크플로명이나 레포 오타.
+            body = e.read().decode(errors="replace")[:300]
+            print(f"[cron] {workflow} dispatch 실패: HTTP {e.code} {body}")
+            self._json(502, {"ok": False, "error": f"github {e.code}"})
+            return
+        except Exception as e:
+            print(f"[cron] {workflow} dispatch 실패: {type(e).__name__}: {e}")
+            self._json(502, {"ok": False, "error": str(e)})
+            return
+
+        self._json(200, {"ok": True, "workflow": workflow})
+
+    def _json(self, status: int, payload: dict):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(payload).encode())
+
     def do_POST(self):
         # 1) Telegram이 timeout으로 재시도하지 않도록 200을 먼저 돌려준다.
         #    body 처리는 그 뒤에 진행. Vercel Python 런타임이 응답을 client에
